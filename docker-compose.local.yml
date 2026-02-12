@@ -1,0 +1,4 @@
+services:
+  frontend:
+    ports:
+      - "${CCVC_PORT:-8090}:80"

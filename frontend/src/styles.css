@@ -1,0 +1,302 @@
+@import "tailwindcss";
+@source "../index.html";
+@source "./**/*.{js,jsx,ts,tsx}";
+
+/* ── Reset ─────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  line-height: 1.5;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+/* ── Design Tokens (Dark) ──────────────────────────── */
+.studio {
+  --bg-0: #081021;
+  --bg-1: #0e1a31;
+  --text: #eef4ff;
+  --text-dim: #d2ddf6;
+  --text-muted: #95a9cc;
+
+  --panel: rgba(17, 27, 47, 0.75);
+  --panel-soft: rgba(19, 31, 53, 0.84);
+  --panel-strong: rgba(22, 35, 61, 0.92);
+
+  --border: rgba(132, 156, 197, 0.33);
+  --border-strong: rgba(154, 178, 223, 0.45);
+
+  --accent: #0a84ff;
+  --accent-soft: #64d2ff;
+  --success: #30d158;
+  --danger: #ff6961;
+
+  --method-hga: #64d2ff;
+  --method-gccvc: #34c759;
+  --method-grccvc: #af8cff;
+  --method-gwccvc: #ff9f3e;
+  --method-exact: #fbc94b;
+
+  --graph-edge: rgba(132, 156, 198, 0.3);
+  --graph-edge-1: color-mix(in srgb, var(--active-method, var(--accent)) 42%, var(--graph-edge));
+  --graph-edge-2: color-mix(in srgb, var(--active-method, var(--accent)) 82%, transparent);
+  --graph-node: rgba(160, 178, 214, 0.56);
+  --graph-node-cover: var(--active-method, var(--accent));
+
+  --shadow: 0 24px 66px rgba(3, 9, 24, 0.48);
+  --shadow-sm: 0 4px 16px rgba(3, 9, 24, 0.24);
+  --shadow-btn: 0 12px 30px rgba(9, 22, 45, 0.19);
+
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 22px;
+  --radius-xl: 28px;
+  --radius-pill: 999px;
+
+  min-height: 100vh;
+  position: relative;
+  overflow-x: clip;
+  color: var(--text);
+  background: linear-gradient(180deg, var(--bg-0), var(--bg-1));
+  padding: 1.5rem 1rem 2rem;
+}
+
+/* ── Design Tokens (Light) ─────────────────────────── */
+.studio.theme-light {
+  --bg-0: #eef4ff;
+  --bg-1: #e7effd;
+  --text: #14213b;
+  --text-dim: #33486f;
+  --text-muted: #6078a1;
+
+  --panel: rgba(255, 255, 255, 0.72);
+  --panel-soft: rgba(255, 255, 255, 0.84);
+  --panel-strong: rgba(255, 255, 255, 0.95);
+
+  --border: rgba(112, 137, 177, 0.32);
+  --border-strong: rgba(103, 130, 177, 0.46);
+
+  --accent: #0071e3;
+  --accent-soft: #4ea2ff;
+  --success: #14a046;
+  --danger: #d63737;
+
+  --method-hga: #0b84ff;
+  --method-gccvc: #18b05f;
+  --method-grccvc: #8b5cf6;
+  --method-gwccvc: #f27f20;
+  --method-exact: #c58f00;
+
+  --graph-edge: rgba(69, 91, 126, 0.3);
+  --graph-node: rgba(52, 74, 112, 0.54);
+
+  --shadow: 0 22px 58px rgba(23, 43, 78, 0.13);
+  --shadow-sm: 0 4px 14px rgba(23, 43, 78, 0.08);
+  --shadow-btn: 0 10px 26px rgba(23, 43, 78, 0.1);
+}
+
+/* ── Background Decorations ────────────────────────── */
+.bg-ink,
+.bg-grid,
+.bg-noise {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.bg-ink {
+  z-index: 0;
+  background:
+    radial-gradient(520px 360px at 93% 3%, color-mix(in srgb, var(--accent-soft) 25%, transparent), transparent 67%),
+    radial-gradient(760px 480px at -7% 112%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 72%);
+}
+
+.bg-grid {
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(129, 152, 190, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(129, 152, 190, 0.08) 1px, transparent 1px);
+  background-size: 26px 26px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), transparent 74%);
+}
+
+.bg-noise {
+  z-index: 0;
+  opacity: 0.19;
+  background-image: radial-gradient(circle at 30% 40%, rgba(255, 255, 255, 0.45) 0.45px, transparent 0.9px);
+  background-size: 4px 4px;
+  mix-blend-mode: soft-light;
+}
+
+/* ── SVG Graph Styles ──────────────────────────────── */
+.edge {
+  stroke: var(--graph-edge);
+}
+
+.edge.one {
+  stroke: var(--graph-edge-1);
+}
+
+.edge.both {
+  stroke: var(--graph-edge-2);
+}
+
+.node {
+  fill: var(--graph-node);
+  stroke: color-mix(in srgb, var(--panel-strong) 85%, transparent);
+  stroke-width: 0.8;
+  transition: fill 140ms ease;
+}
+
+.node.in-cover {
+  fill: var(--graph-node-cover);
+  stroke: color-mix(in srgb, var(--graph-node-cover) 54%, #fff);
+}
+
+.node[data-selected="true"] {
+  stroke: #fff;
+  stroke-width: 1.6;
+}
+
+.node-glow {
+  fill: color-mix(in srgb, var(--graph-node-cover) 22%, transparent);
+}
+
+.node-label {
+  fill: color-mix(in srgb, var(--text) 82%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+/* ── Keyframe Animations ───────────────────────────── */
+.reveal {
+  opacity: 0;
+  transform: translateY(14px);
+  filter: blur(4px);
+  animation: reveal-in 500ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+}
+
+.delay-1 { animation-delay: 0.06s; }
+.delay-2 { animation-delay: 0.12s; }
+.delay-3 { animation-delay: 0.18s; }
+.delay-4 { animation-delay: 0.24s; }
+.delay-5 { animation-delay: 0.30s; }
+
+@keyframes reveal-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fade-in 300ms ease-out both;
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+/* ── Academic Table ────────────────────────────────── */
+.academic-table {
+  width: 100%;
+  min-width: 840px;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.academic-table thead th {
+  text-align: right;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-strong);
+  padding: 0.55rem 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.academic-table thead th:nth-child(2),
+.academic-table tbody td:nth-child(2) {
+  text-align: left;
+}
+
+.academic-table tbody td {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+  padding: 0.5rem 0.55rem;
+  text-align: right;
+}
+
+.academic-table tbody tr:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* ── Utility ───────────────────────────────────────── */
+.hidden {
+  display: none;
+}
+
+/* ── Scrollbar polish ──────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}

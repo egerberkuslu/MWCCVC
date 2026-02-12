@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log
+dist
+.git
+.gitignore
+.DS_Store
+*.log
+.env
+.env.*
+coverage
+.vscode
+.idea
+*.swp
+*.swo

@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: ccvc-backend
+    restart: unless-stopped
+    expose:
+      - "8000"
+    networks:
+      - default
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: ccvc-frontend
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      - backend
+    networks:
+      - default
+      - webpage_default
+
+networks:
+  webpage_default:
+    external: true
