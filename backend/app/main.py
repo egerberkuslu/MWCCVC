@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import math
+import random
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
+from .analysis_tools.ConnectivityRatioVisualizer import ConnectivityRatioVisualizer
+from .analysis_tools.GraphAnalyzer import GraphAnalyzer
+from .analysis_tools.PresetScaleTestAnalyzer import PresetScaleTestAnalyzer
+from .analysis_tools.ScaleAnalyzer import ScaleAnalyzer
+from .analysis_tools.ScaleVisualizer import ScaleVisualizer
+from .analysis_tools.datareader import list_dataset_files, parse_scale_from_filename
 from .algorithms import (
     solve_exact,
     solve_gccvc,
@@ -18,6 +26,13 @@ from .algorithms import (
 
 SUPPORTED_METHODS = {"gccvc", "grccvc", "gwccvc", "hga", "exact"}
 SUPPORTED_OPTIMIZE_GOALS = {"min-feasible-k", "best-weight"}
+DEFAULT_DAGDEVIREN_DATASET_DIR = Path(__file__).resolve().parents[1] / "data" / "DagdevirenDataset"
+DAGDEVIREN_DEFAULT_RATIOS = [2.0, 4.0, 6.0, 8.0]
+DAGDEVIREN_SCALE_ORDER = ["small", "medium", "large"]
+DAGDEVIREN_DEFAULT_SMALL_SCALES = [10, 15, 20, 25]
+DAGDEVIREN_DEFAULT_MEDIUM_SCALES = [50, 100, 150, 200]
+DAGDEVIREN_DEFAULT_LARGE_SCALES = [250, 500, 750, 1000]
+DAGDEVIREN_DEFAULT_CAPACITY_BY_SCALE = {"small": 18, "medium": 16, "large": 16}
 
 
 class VertexIn(BaseModel):
@@ -69,6 +84,192 @@ class SolveRequest(BaseModel):
         return normalized
 
 
+class DagdevirenAnalysisRequest(BaseModel):
+    datasetDir: Optional[str] = None
+    files: Optional[List[str]] = None
+    filenameContains: Optional[str] = None
+    maxFiles: int = Field(default=400, ge=1, le=400)
+    methods: Optional[List[str]] = None
+    includeExact: bool = False
+    capacityK: Optional[int] = Field(default=None, ge=1)
+    optimizeK: bool = False
+    optimizeGoal: str = "min-feasible-k"
+    optimizeMaxTrials: int = Field(default=18, ge=4, le=100)
+    ratios: Optional[List[float]] = Field(default_factory=lambda: list(DAGDEVIREN_DEFAULT_RATIOS))
+    smallScales: List[int] = Field(default_factory=lambda: list(DAGDEVIREN_DEFAULT_SMALL_SCALES))
+    mediumScales: List[int] = Field(default_factory=lambda: list(DAGDEVIREN_DEFAULT_MEDIUM_SCALES))
+    largeScales: List[int] = Field(default_factory=lambda: list(DAGDEVIREN_DEFAULT_LARGE_SCALES))
+    capacityByScale: Dict[str, int] = Field(
+        default_factory=lambda: dict(DAGDEVIREN_DEFAULT_CAPACITY_BY_SCALE)
+    )
+    popSize: int = Field(default=40, ge=2, le=300)
+    generations: int = Field(default=60, ge=1, le=1000)
+    seed: int = 42
+
+    @field_validator("methods")
+    @classmethod
+    def validate_methods(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return value
+        normalized = [method.lower().strip() for method in value]
+        invalid = [method for method in normalized if method not in SUPPORTED_METHODS]
+        if invalid:
+            raise ValueError(f"Unsupported methods: {', '.join(invalid)}")
+        deduped: List[str] = []
+        seen = set()
+        for method in normalized:
+            if method not in seen:
+                seen.add(method)
+                deduped.append(method)
+        return deduped
+
+    @field_validator("optimizeGoal")
+    @classmethod
+    def validate_optimize_goal(cls, value: str) -> str:
+        normalized = str(value).strip().lower()
+        if normalized not in SUPPORTED_OPTIMIZE_GOALS:
+            raise ValueError(
+                f"Unsupported optimizeGoal: {normalized}. "
+                f"Use one of {', '.join(sorted(SUPPORTED_OPTIMIZE_GOALS))}."
+            )
+        return normalized
+
+    @field_validator("files")
+    @classmethod
+    def validate_files(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return value
+        cleaned = [Path(str(item)).name for item in value if str(item).strip()]
+        deduped: List[str] = []
+        seen = set()
+        for item in cleaned:
+            if item not in seen:
+                seen.add(item)
+                deduped.append(item)
+        return deduped or None
+
+    @field_validator("ratios")
+    @classmethod
+    def validate_ratios(cls, value: Optional[List[float]]) -> Optional[List[float]]:
+        if value is None:
+            return value
+        ratios = sorted({round(float(item), 6) for item in value if float(item) > 0.0})
+        return ratios or None
+
+    @field_validator("smallScales", "mediumScales", "largeScales")
+    @classmethod
+    def validate_scale_lists(cls, value: List[int]) -> List[int]:
+        deduped = sorted({int(item) for item in value if int(item) > 0})
+        return deduped
+
+    @field_validator("capacityByScale")
+    @classmethod
+    def validate_capacity_by_scale(cls, value: Dict[str, int]) -> Dict[str, int]:
+        default_values = DAGDEVIREN_DEFAULT_CAPACITY_BY_SCALE
+        normalized = dict(default_values)
+        for key, item in value.items():
+            name = str(key).strip().lower()
+            if name not in default_values:
+                continue
+            ivalue = int(item)
+            if ivalue >= 1:
+                normalized[name] = ivalue
+        return normalized
+
+
+class DagdevirenPresetScaleTestRequest(BaseModel):
+    datasetDir: Optional[str] = None
+    filenameContains: Optional[str] = None
+    maxFilesPerScale: int = Field(default=400, ge=1, le=400)
+    scanLimit: int = Field(default=200000, ge=100, le=200000)
+    targetScales: Optional[List[str]] = None
+    fillMissingWithSynthetic: bool = False
+    syntheticTargetPerScale: int = Field(default=1, ge=1, le=20)
+    methods: Optional[List[str]] = None
+    includeExact: bool = False
+    capacityK: Optional[int] = Field(default=None, ge=1)
+    optimizeK: bool = False
+    optimizeGoal: str = "min-feasible-k"
+    optimizeMaxTrials: int = Field(default=18, ge=4, le=100)
+    ratios: Optional[List[float]] = Field(default_factory=lambda: list(DAGDEVIREN_DEFAULT_RATIOS))
+    capacityByScale: Dict[str, int] = Field(
+        default_factory=lambda: dict(DAGDEVIREN_DEFAULT_CAPACITY_BY_SCALE)
+    )
+    popSize: int = Field(default=40, ge=2, le=300)
+    generations: int = Field(default=60, ge=1, le=1000)
+    seed: int = 42
+
+    @field_validator("methods")
+    @classmethod
+    def validate_methods(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return value
+        normalized = [method.lower().strip() for method in value]
+        invalid = [method for method in normalized if method not in SUPPORTED_METHODS]
+        if invalid:
+            raise ValueError(f"Unsupported methods: {', '.join(invalid)}")
+        deduped: List[str] = []
+        seen = set()
+        for method in normalized:
+            if method not in seen:
+                seen.add(method)
+                deduped.append(method)
+        return deduped
+
+    @field_validator("optimizeGoal")
+    @classmethod
+    def validate_optimize_goal(cls, value: str) -> str:
+        normalized = str(value).strip().lower()
+        if normalized not in SUPPORTED_OPTIMIZE_GOALS:
+            raise ValueError(
+                f"Unsupported optimizeGoal: {normalized}. "
+                f"Use one of {', '.join(sorted(SUPPORTED_OPTIMIZE_GOALS))}."
+            )
+        return normalized
+
+    @field_validator("ratios")
+    @classmethod
+    def validate_ratios(cls, value: Optional[List[float]]) -> Optional[List[float]]:
+        if value is None:
+            return value
+        ratios = sorted({round(float(item), 6) for item in value if float(item) > 0.0})
+        return ratios or None
+
+    @field_validator("capacityByScale")
+    @classmethod
+    def validate_capacity_by_scale(cls, value: Dict[str, int]) -> Dict[str, int]:
+        default_values = DAGDEVIREN_DEFAULT_CAPACITY_BY_SCALE
+        normalized = dict(default_values)
+        for key, item in value.items():
+            name = str(key).strip().lower()
+            if name not in default_values:
+                continue
+            ivalue = int(item)
+            if ivalue >= 1:
+                normalized[name] = ivalue
+        return normalized
+
+    @field_validator("targetScales")
+    @classmethod
+    def validate_target_scales(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return value
+        allowed = set(DAGDEVIREN_SCALE_ORDER)
+        deduped: List[str] = []
+        seen = set()
+        for item in value:
+            name = str(item).strip().lower()
+            if name not in allowed:
+                raise ValueError(
+                    f"Unsupported target scale: {name}. "
+                    f"Use one of {', '.join(DAGDEVIREN_SCALE_ORDER)}."
+                )
+            if name not in seen:
+                seen.add(name)
+                deduped.append(name)
+        return deduped or list(DAGDEVIREN_SCALE_ORDER)
+
+
 app = FastAPI(
     title="CCVC Solver API",
     version="1.0.0",
@@ -82,6 +283,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def resolve_dataset_dir(raw_dataset_dir: Optional[str]) -> Path:
+    if raw_dataset_dir is None or not str(raw_dataset_dir).strip():
+        dataset_dir = DEFAULT_DAGDEVIREN_DATASET_DIR
+    else:
+        candidate = Path(str(raw_dataset_dir).strip()).expanduser()
+        if not candidate.is_absolute():
+            backend_root = Path(__file__).resolve().parents[1]
+            candidate = backend_root / candidate
+        dataset_dir = candidate
+
+    dataset_dir = dataset_dir.resolve()
+    if not dataset_dir.exists() or not dataset_dir.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dataset directory not found: {dataset_dir}",
+        )
+    return dataset_dir
 
 
 def normalize_edges(
@@ -505,4 +725,587 @@ def solve(payload: SolveRequest) -> Dict[str, Any]:
             "kBounds": k_bounds,
             "optimization": optimization_meta,
         },
+    }
+
+
+@app.get("/api/analysis/dagdeviren/files")
+def dagdeviren_files(
+    datasetDir: Optional[str] = None,
+    filenameContains: Optional[str] = None,
+    limit: int = Query(default=200, ge=1, le=2000),
+) -> Dict[str, Any]:
+    dataset_dir = resolve_dataset_dir(datasetDir)
+    files = list_dataset_files(
+        dataset_dir,
+        filename_contains=filenameContains,
+        max_files=limit,
+    )
+    return {
+        "datasetDir": str(dataset_dir),
+        "count": len(files),
+        "files": [file.name for file in files],
+    }
+
+
+@app.get("/api/analysis/dagdeviren/ratios")
+def dagdeviren_ratios(
+    datasetDir: Optional[str] = None,
+    filenameContains: Optional[str] = None,
+    limit: int = Query(default=2000, ge=1, le=20000),
+) -> Dict[str, Any]:
+    dataset_dir = resolve_dataset_dir(datasetDir)
+    files = list_dataset_files(
+        dataset_dir,
+        filename_contains=filenameContains,
+        max_files=limit,
+    )
+
+    ratios = sorted(
+        {
+            round(float(scale["m"]) / float(scale["n"]), 6)
+            for scale in (parse_scale_from_filename(path.name) for path in files)
+            if scale["n"] and scale["m"]
+        }
+    )
+    ratio_file_counts: Dict[str, int] = {}
+    for path in files:
+        scale = parse_scale_from_filename(path.name)
+        if not scale["n"] or not scale["m"]:
+            continue
+        key = f"{(float(scale['m']) / float(scale['n'])):.6f}".rstrip("0").rstrip(".")
+        ratio_file_counts[key] = ratio_file_counts.get(key, 0) + 1
+
+    return {
+        "datasetDir": str(dataset_dir),
+        "count": len(ratios),
+        "ratios": ratios,
+        "ratioFileCounts": ratio_file_counts,
+    }
+
+
+def _normalized_ratio_set(values: Optional[List[float]]) -> Optional[set]:
+    if not values:
+        return None
+    return {round(float(value), 6) for value in values if float(value) > 0.0}
+
+
+def _scale_triplet_from_filename(name: str) -> Optional[Tuple[int, int, int]]:
+    scale = parse_scale_from_filename(name)
+    n = scale.get("n")
+    m = scale.get("m")
+    s = scale.get("s")
+    if n is None or m is None or s is None:
+        return None
+    n_value = int(n)
+    m_value = int(m)
+    s_value = int(s)
+    if n_value <= 0 or m_value < 0 or s_value <= 0:
+        return None
+    return (n_value, m_value, s_value)
+
+
+def _select_bucket_files(
+    *,
+    candidate_files: List[Path],
+    node_counts: List[int],
+    allowed_ratios: Optional[set],
+    max_files: int,
+) -> List[str]:
+    wanted_nodes = {int(value) for value in node_counts if int(value) > 0}
+    # Keep signature compatibility; preset selection now always includes all s seeds per (n,m) pair.
+    _ = max(1, int(max_files))
+    grouped: Dict[Tuple[int, int], List[Tuple[int, str]]] = {}
+    for path in candidate_files:
+        parsed = _scale_triplet_from_filename(path.name)
+        if parsed is None:
+            continue
+        n, m, s = parsed
+        if n not in wanted_nodes:
+            continue
+        ratio = round(float(m) / float(max(1, n)), 6)
+        if allowed_ratios is not None and ratio not in allowed_ratios:
+            continue
+        grouped.setdefault((n, m), []).append((s, path.name))
+
+    selected: List[str] = []
+    for pair in sorted(grouped.keys()):
+        seeds = sorted(grouped[pair], key=lambda item: (item[0], item[1]))
+        selected.extend(name for _, name in seeds)
+    return selected
+
+
+def _ratio_key(value: float) -> str:
+    return f"{float(value):.6f}".rstrip("0").rstrip(".")
+
+
+def _build_pair_coverage(file_names: List[str]) -> List[Dict[str, Any]]:
+    grouped: Dict[Tuple[int, int], List[Tuple[int, str]]] = {}
+    for file_name in file_names:
+        parsed = _scale_triplet_from_filename(file_name)
+        if parsed is None:
+            continue
+        n, m, s = parsed
+        grouped.setdefault((n, m), []).append((s, file_name))
+
+    rows: List[Dict[str, Any]] = []
+    for pair in sorted(grouped.keys()):
+        n, m = pair
+        values = sorted(grouped[pair], key=lambda item: (item[0], item[1]))
+        s_values = [seed for seed, _ in values]
+        rows.append(
+            {
+                "n": n,
+                "m": m,
+                "ratio": round(float(m) / float(n), 6) if n > 0 else None,
+                "sCount": len(values),
+                "sValues": s_values,
+                "files": [name for _, name in values],
+            }
+        )
+    return rows
+
+
+def _method_summary(graph_rows: List[Dict[str, Any]], methods: List[str]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    for method in methods:
+        attempted = 0
+        valid_runs = 0
+        times: List[float] = []
+        weights: List[float] = []
+        cover_sizes: List[float] = []
+
+        for row in graph_rows:
+            results = row.get("results") or {}
+            if method in results:
+                attempted += 1
+            result = results.get(method)
+            if not result:
+                continue
+
+            result_time = float(result.get("time", float("nan")))
+            if math.isfinite(result_time):
+                times.append(result_time)
+
+            verification = result.get("verification") or {}
+            if bool(verification.get("isValid")):
+                valid_runs += 1
+                total_weight = float(verification.get("totalWeight", float("nan")))
+                cover_size = float(verification.get("coverSize", float("nan")))
+                if math.isfinite(total_weight):
+                    weights.append(total_weight)
+                if math.isfinite(cover_size):
+                    cover_sizes.append(cover_size)
+
+        summary[method] = {
+            "attempted": attempted,
+            "validRuns": valid_runs,
+            "validRate": round(float(valid_runs / attempted), 6) if attempted else 0.0,
+            "avgTimeMs": round(float(sum(times) / len(times)), 6) if times else None,
+            "avgWeight": round(float(sum(weights) / len(weights)), 6) if weights else None,
+            "avgCoverSize": round(float(sum(cover_sizes) / len(cover_sizes)), 6) if cover_sizes else None,
+        }
+
+    return summary
+
+
+def _update_graph_analysis_summary(graph_analysis: Dict[str, Any]) -> None:
+    graph_rows = graph_analysis.get("graphs") or []
+    methods = list(graph_analysis.get("methods") or [])
+
+    discovered: set[float] = set()
+    ratio_counts: Dict[str, int] = {}
+    for row in graph_rows:
+        ratio = row.get("ratio")
+        if ratio is None:
+            continue
+        ratio_value = round(float(ratio), 6)
+        discovered.add(ratio_value)
+        key = _ratio_key(ratio_value)
+        ratio_counts[key] = ratio_counts.get(key, 0) + 1
+
+    graph_analysis["discoveredRatios"] = sorted(discovered)
+    graph_analysis["ratioCounts"] = ratio_counts
+    graph_analysis["graphCount"] = len(graph_rows)
+    graph_analysis["errorCount"] = len(graph_analysis.get("errors") or [])
+    graph_analysis["summary"] = {
+        "graphCount": len(graph_rows),
+        "methodSummary": _method_summary(graph_rows, methods),
+    }
+
+
+def _build_synthetic_graph_payload(
+    *,
+    node_count: int,
+    ratio: float,
+    seed: int,
+) -> Dict[str, Any]:
+    n = max(2, int(node_count))
+    ratio_value = max(0.5, float(ratio))
+    target_edges = int(round(n * ratio_value))
+    min_edges = n - 1
+    max_edges = (n * (n - 1)) // 2
+    target_edges = max(min_edges, min(max_edges, target_edges))
+
+    rnd = random.Random(seed)
+    vertices = [
+        {"id": node_id, "weight": round(1.0 + rnd.random() * 99.0, 3)}
+        for node_id in range(1, n + 1)
+    ]
+
+    edges: set[Tuple[int, int]] = set()
+    for node_id in range(2, n + 1):
+        parent = rnd.randint(1, node_id - 1)
+        edges.add((parent, node_id) if parent < node_id else (node_id, parent))
+
+    attempts = 0
+    max_attempts = max(10_000, target_edges * 12)
+    while len(edges) < target_edges and attempts < max_attempts:
+        attempts += 1
+        u = rnd.randint(1, n)
+        v = rnd.randint(1, n - 1)
+        if v >= u:
+            v += 1
+        edge = (u, v) if u < v else (v, u)
+        edges.add(edge)
+
+    edge_list = sorted(edges)
+    actual_edges = len(edge_list)
+    synthetic_name = f"n{n}_m{actual_edges}_s{seed}.txt"
+    return {
+        "name": synthetic_name,
+        "vertices": vertices,
+        "edges": edge_list,
+        "declaredNodeCount": n,
+        "declaredEdgeCount": actual_edges,
+        "parsedNodeCount": n,
+        "parsedEdgeCount": actual_edges,
+    }
+
+
+def _planned_synthetic_specs(
+    *,
+    bucket: str,
+    node_counts: List[int],
+    ratios: List[float],
+    existing_files: List[str],
+    needed_count: int,
+    base_seed: int,
+) -> List[Dict[str, Any]]:
+    if needed_count <= 0:
+        return []
+
+    existing_node_counts: set[int] = set()
+    existing_ratios: set[float] = set()
+    for file_name in existing_files:
+        scale = parse_scale_from_filename(file_name)
+        n = scale.get("n")
+        m = scale.get("m")
+        if n and m and int(n) > 0:
+            existing_node_counts.add(int(n))
+            existing_ratios.add(round(float(m) / float(n), 6))
+
+    node_candidates = [
+        int(value)
+        for value in node_counts
+        if int(value) > 0 and int(value) not in existing_node_counts
+    ] or [int(value) for value in node_counts if int(value) > 0]
+    ratio_candidates = [
+        round(float(value), 6)
+        for value in ratios
+        if float(value) > 0.0 and round(float(value), 6) not in existing_ratios
+    ] or [round(float(value), 6) for value in ratios if float(value) > 0.0]
+
+    if not node_candidates or not ratio_candidates:
+        return []
+
+    bucket_offset = {"small": 0, "medium": 10000, "large": 20000}.get(bucket, 30000)
+    planned: List[Dict[str, Any]] = []
+    for index in range(needed_count):
+        node_count = node_candidates[index % len(node_candidates)]
+        ratio_value = ratio_candidates[index % len(ratio_candidates)]
+        planned.append(
+            {
+                "bucket": bucket,
+                "nodeCount": node_count,
+                "ratio": ratio_value,
+                "seed": int(base_seed) + bucket_offset + index,
+            }
+        )
+    return planned
+
+
+@app.post("/api/analysis/dagdeviren/preset-tests")
+def dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> Dict[str, Any]:
+    dataset_dir = resolve_dataset_dir(payload.datasetDir)
+    methods = payload.methods or ["gccvc", "grccvc", "gwccvc", "hga"]
+    ratios = payload.ratios or list(DAGDEVIREN_DEFAULT_RATIOS)
+    ratio_set = _normalized_ratio_set(ratios)
+    capacity_by_scale = payload.capacityByScale or dict(DAGDEVIREN_DEFAULT_CAPACITY_BY_SCALE)
+    requested_scales = payload.targetScales or list(DAGDEVIREN_SCALE_ORDER)
+    enabled_scales = set(requested_scales)
+
+    candidate_files = list_dataset_files(
+        dataset_dir,
+        filename_contains=payload.filenameContains,
+        max_files=payload.scanLimit,
+    )
+    small_files = (
+        _select_bucket_files(
+            candidate_files=candidate_files,
+            node_counts=DAGDEVIREN_DEFAULT_SMALL_SCALES,
+            allowed_ratios=ratio_set,
+            max_files=payload.maxFilesPerScale,
+        )
+        if "small" in enabled_scales
+        else []
+    )
+    medium_files = (
+        _select_bucket_files(
+            candidate_files=candidate_files,
+            node_counts=DAGDEVIREN_DEFAULT_MEDIUM_SCALES,
+            allowed_ratios=ratio_set,
+            max_files=payload.maxFilesPerScale,
+        )
+        if "medium" in enabled_scales
+        else []
+    )
+    large_files = (
+        _select_bucket_files(
+            candidate_files=candidate_files,
+            node_counts=DAGDEVIREN_DEFAULT_LARGE_SCALES,
+            allowed_ratios=ratio_set,
+            max_files=payload.maxFilesPerScale,
+        )
+        if "large" in enabled_scales
+        else []
+    )
+
+    selected_files: List[str] = []
+    seen = set()
+    for name in small_files + medium_files + large_files:
+        if name in seen:
+            continue
+        seen.add(name)
+        selected_files.append(name)
+
+    small_pair_coverage = _build_pair_coverage(small_files)
+    medium_pair_coverage = _build_pair_coverage(medium_files)
+    large_pair_coverage = _build_pair_coverage(large_files)
+    selected_pair_count = (
+        len(small_pair_coverage)
+        + len(medium_pair_coverage)
+        + len(large_pair_coverage)
+    )
+
+    analysis_files: Optional[List[str]]
+    if payload.targetScales is not None:
+        analysis_files = list(selected_files)
+    else:
+        analysis_files = selected_files or None
+
+    graph_analyzer = GraphAnalyzer(
+        methods=methods,
+        include_exact=payload.includeExact,
+        pop_size=payload.popSize,
+        generations=payload.generations,
+        seed=payload.seed,
+        fixed_capacity_k=payload.capacityK,
+        optimize_k=payload.optimizeK,
+        optimize_goal=payload.optimizeGoal,
+        optimize_max_trials=payload.optimizeMaxTrials,
+        ratios=ratios,
+        small_scales=DAGDEVIREN_DEFAULT_SMALL_SCALES,
+        medium_scales=DAGDEVIREN_DEFAULT_MEDIUM_SCALES,
+        large_scales=DAGDEVIREN_DEFAULT_LARGE_SCALES,
+        capacity_by_scale=capacity_by_scale,
+    )
+    graph_analysis = graph_analyzer.analyze_dataset(
+        dataset_dir=dataset_dir,
+        files=analysis_files,
+        filename_contains=None if analysis_files is not None else payload.filenameContains,
+        max_files=max(1, len(selected_files) or payload.maxFilesPerScale * 3),
+    )
+
+    synthetic_generated_by_scale: Dict[str, List[str]] = {
+        "small": [],
+        "medium": [],
+        "large": [],
+    }
+    synthetic_target_per_scale = max(
+        1,
+        min(
+            int(payload.syntheticTargetPerScale),
+            int(payload.maxFilesPerScale),
+            max(1, max(len(DAGDEVIREN_DEFAULT_SMALL_SCALES), len(ratios))),
+        ),
+    )
+
+    if payload.fillMissingWithSynthetic:
+        scale_input = {
+            "small": {
+                "nodeCounts": list(DAGDEVIREN_DEFAULT_SMALL_SCALES),
+                "selectedFiles": list(small_files),
+            },
+            "medium": {
+                "nodeCounts": list(DAGDEVIREN_DEFAULT_MEDIUM_SCALES),
+                "selectedFiles": list(medium_files),
+            },
+            "large": {
+                "nodeCounts": list(DAGDEVIREN_DEFAULT_LARGE_SCALES),
+                "selectedFiles": list(large_files),
+            },
+        }
+
+        for bucket_name, bucket_payload in scale_input.items():
+            if bucket_name not in enabled_scales:
+                continue
+            selected_bucket_files = bucket_payload["selectedFiles"]
+            needed_count = max(0, synthetic_target_per_scale - len(selected_bucket_files))
+            specs = _planned_synthetic_specs(
+                bucket=bucket_name,
+                node_counts=bucket_payload["nodeCounts"],
+                ratios=ratios,
+                existing_files=selected_bucket_files,
+                needed_count=needed_count,
+                base_seed=payload.seed,
+            )
+            for spec in specs:
+                graph_payload = _build_synthetic_graph_payload(
+                    node_count=spec["nodeCount"],
+                    ratio=spec["ratio"],
+                    seed=spec["seed"],
+                )
+                try:
+                    graph_row = graph_analyzer._analyze_single_graph(graph_payload)
+                    graph_analysis["graphs"].append(graph_row)
+                    synthetic_generated_by_scale[bucket_name].append(graph_payload["name"])
+                except Exception as exc:
+                    graph_analysis.setdefault("errors", []).append(
+                        {
+                            "file": graph_payload["name"],
+                            "error": f"synthetic_generation_failed: {exc}",
+                        }
+                    )
+
+    _update_graph_analysis_summary(graph_analysis)
+    preset_scale_tests = PresetScaleTestAnalyzer().build(graph_analysis["graphs"])
+    synthetic_generated_count = sum(len(value) for value in synthetic_generated_by_scale.values())
+
+    return {
+        "meta": {
+            "datasetDir": str(dataset_dir),
+            "methods": graph_analysis["methods"],
+            "capacityK": payload.capacityK,
+            "optimizeK": payload.optimizeK,
+            "optimizeGoal": payload.optimizeGoal,
+            "optimizeMaxTrials": payload.optimizeMaxTrials,
+            "filenameContains": payload.filenameContains,
+            "ratios": ratios,
+            "targetScales": requested_scales,
+            "smallScales": list(DAGDEVIREN_DEFAULT_SMALL_SCALES),
+            "mediumScales": list(DAGDEVIREN_DEFAULT_MEDIUM_SCALES),
+            "largeScales": list(DAGDEVIREN_DEFAULT_LARGE_SCALES),
+            "capacityByScale": capacity_by_scale,
+            "maxFilesPerScale": payload.maxFilesPerScale,
+            "selectionMode": "grouped-by-n-m-include-all-s",
+            "syntheticEnabled": payload.fillMissingWithSynthetic,
+            "syntheticTargetPerScale": synthetic_target_per_scale,
+            "syntheticGeneratedCount": synthetic_generated_count,
+            "graphCount": graph_analysis["graphCount"],
+            "errorCount": graph_analysis["errorCount"],
+        },
+        "selection": {
+            "candidateCount": len(candidate_files),
+            "selectedCount": len(selected_files),
+            "selectedPairCount": selected_pair_count,
+            "totalAnalyzedGraphs": graph_analysis["graphCount"],
+            "targetScales": requested_scales,
+            "small": {
+                "requestedNodeCounts": list(DAGDEVIREN_DEFAULT_SMALL_SCALES),
+                "selectedFiles": small_files,
+                "pairCoverage": small_pair_coverage,
+                "syntheticFiles": synthetic_generated_by_scale["small"],
+            },
+            "medium": {
+                "requestedNodeCounts": list(DAGDEVIREN_DEFAULT_MEDIUM_SCALES),
+                "selectedFiles": medium_files,
+                "pairCoverage": medium_pair_coverage,
+                "syntheticFiles": synthetic_generated_by_scale["medium"],
+            },
+            "large": {
+                "requestedNodeCounts": list(DAGDEVIREN_DEFAULT_LARGE_SCALES),
+                "selectedFiles": large_files,
+                "pairCoverage": large_pair_coverage,
+                "syntheticFiles": synthetic_generated_by_scale["large"],
+            },
+            "synthetic": {
+                "enabled": payload.fillMissingWithSynthetic,
+                "targetPerScale": synthetic_target_per_scale,
+                "generatedCount": synthetic_generated_count,
+            },
+        },
+        "graphAnalysis": graph_analysis,
+        "presetScaleTests": preset_scale_tests,
+    }
+
+
+@app.post("/api/analysis/dagdeviren/run")
+def dagdeviren_run(payload: DagdevirenAnalysisRequest) -> Dict[str, Any]:
+    dataset_dir = resolve_dataset_dir(payload.datasetDir)
+    methods = payload.methods or ["gccvc", "grccvc", "gwccvc", "hga"]
+    ratios = payload.ratios or list(DAGDEVIREN_DEFAULT_RATIOS)
+    small_scales = payload.smallScales or list(DAGDEVIREN_DEFAULT_SMALL_SCALES)
+    medium_scales = payload.mediumScales or list(DAGDEVIREN_DEFAULT_MEDIUM_SCALES)
+    large_scales = payload.largeScales or list(DAGDEVIREN_DEFAULT_LARGE_SCALES)
+    capacity_by_scale = payload.capacityByScale or dict(DAGDEVIREN_DEFAULT_CAPACITY_BY_SCALE)
+
+    graph_analyzer = GraphAnalyzer(
+        methods=methods,
+        include_exact=payload.includeExact,
+        pop_size=payload.popSize,
+        generations=payload.generations,
+        seed=payload.seed,
+        fixed_capacity_k=payload.capacityK,
+        optimize_k=payload.optimizeK,
+        optimize_goal=payload.optimizeGoal,
+        optimize_max_trials=payload.optimizeMaxTrials,
+        ratios=ratios,
+        small_scales=small_scales,
+        medium_scales=medium_scales,
+        large_scales=large_scales,
+        capacity_by_scale=capacity_by_scale,
+    )
+    graph_analysis = graph_analyzer.analyze_dataset(
+        dataset_dir=dataset_dir,
+        files=payload.files,
+        filename_contains=payload.filenameContains,
+        max_files=payload.maxFiles,
+    )
+
+    scale_analysis = ScaleAnalyzer().analyze(graph_analysis["graphs"])
+    connectivity_visualization = ConnectivityRatioVisualizer().build(graph_analysis["graphs"])
+    scale_visualization = ScaleVisualizer().build(scale_analysis)
+
+    return {
+        "meta": {
+            "datasetDir": str(dataset_dir),
+            "methods": graph_analysis["methods"],
+            "capacityK": payload.capacityK,
+            "optimizeK": payload.optimizeK,
+            "optimizeGoal": payload.optimizeGoal,
+            "optimizeMaxTrials": payload.optimizeMaxTrials,
+            "maxFiles": payload.maxFiles,
+            "filenameContains": payload.filenameContains,
+            "ratios": ratios,
+            "smallScales": small_scales,
+            "mediumScales": medium_scales,
+            "largeScales": large_scales,
+            "capacityByScale": capacity_by_scale,
+            "graphCount": graph_analysis["graphCount"],
+            "errorCount": graph_analysis["errorCount"],
+        },
+        "graphAnalysis": graph_analysis,
+        "scaleAnalysis": scale_analysis,
+        "connectivityRatioVisualization": connectivity_visualization,
+        "scaleVisualization": scale_visualization,
     }

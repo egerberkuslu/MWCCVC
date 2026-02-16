@@ -83,3 +83,31 @@ The backend computes theoretical bounds from the input graph:
 - `Kmax = Δ(G)` (maximum degree, practical upper bound).
 
 The response `meta` includes `kBounds` and `optimization` trial details.
+
+## Dagdeviren Analysis Integration
+
+CCVC now includes non-simulator analysis tooling inspired by `netos-independent-set`:
+
+- `backend/app/analysis_tools/datareader.py`
+- `backend/app/analysis_tools/GraphAnalyzer.py`
+- `backend/app/analysis_tools/ScaleAnalyzer.py`
+- `backend/app/analysis_tools/ConnectivityRatioVisualizer.py`
+- `backend/app/analysis_tools/ScaleVisualizer.py`
+
+API endpoints:
+
+- `GET /api/analysis/dagdeviren/files`
+- `GET /api/analysis/dagdeviren/ratios`
+- `POST /api/analysis/dagdeviren/run`
+
+Default dataset directory:
+
+- `backend/data/DagdevirenDataset`
+
+The repository includes a small sample file (`n10_m20_s1.txt`) and you can copy the full Dagdeviren dataset into that folder.
+
+`POST /api/analysis/dagdeviren/run` also supports script-style configuration:
+
+- `ratios` (like `discover_ratios(...)` output),
+- `smallScales`, `mediumScales`, `largeScales`,
+- `capacityByScale` (e.g. `{"small":18,"medium":16,"large":16}`).

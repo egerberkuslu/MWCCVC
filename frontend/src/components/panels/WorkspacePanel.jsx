@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import clsx from "clsx";
 import {
   Bar,
@@ -37,10 +37,35 @@ export default function WorkspacePanel({
   latexByTab,
   solveMeta,
   results,
+  datasetAnalysis,
+  presetScaleTests,
 }) {
   const copyLatex = useCallback(() => {
     navigator.clipboard?.writeText(latexByTab[latexTab] || "");
   }, [latexByTab, latexTab]);
+  const rawWorkspacePayload = useMemo(() => {
+    const payload = {};
+    if (solveMeta || results) {
+      payload.solve = {
+        meta: solveMeta || null,
+        results: results || null,
+      };
+    }
+    if (datasetAnalysis) {
+      payload.datasetAnalysis = datasetAnalysis;
+    }
+    if (presetScaleTests) {
+      payload.presetScaleTests = presetScaleTests;
+    }
+    if (!Object.keys(payload).length) {
+      payload.note = "Run solve, dataset analysis, or preset tests to populate raw data.";
+    }
+    return payload;
+  }, [solveMeta, results, datasetAnalysis, presetScaleTests]);
+  const rawWorkspaceJson = useMemo(
+    () => JSON.stringify(rawWorkspacePayload, null, 2),
+    [rawWorkspacePayload]
+  );
 
   return (
     <section className={clsx(panel, "reveal delay-4 min-w-0")}>
@@ -364,7 +389,7 @@ export default function WorkspacePanel({
         <div className="animate-fade-in flex flex-col gap-4">
           <Card title="Raw JSON">
             <pre className="mt-3 max-h-[360px] overflow-auto rounded-[12px] border border-[var(--border)] bg-[color-mix(in_srgb,var(--panel-strong)_98%,transparent)] p-4 font-mono text-sm leading-relaxed text-[var(--text-dim)]">
-              {JSON.stringify({ meta: solveMeta, results }, null, 2)}
+              {rawWorkspaceJson}
             </pre>
           </Card>
         </div>

@@ -1,7 +1,7 @@
 import { API_BASE } from "../constants/ui";
 
-async function postSolve(payload, contextLabel) {
-  const response = await fetch(`${API_BASE}/solve`, {
+async function postSolve(payload, contextLabel, endpoint = "/solve") {
+  const response = await fetch(`${API_BASE}${endpoint}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -21,4 +21,12 @@ export async function solveGraph(payload) {
 
 export async function solveBenchmarkGraph(payload) {
   return postSolve(payload, "Benchmark");
+}
+
+export async function runDagdevirenAnalysis(payload) {
+  return postSolve(payload, "Dagdeviren Analysis", "/analysis/dagdeviren/run");
+}
+
+export async function runDagdevirenPresetTests(payload) {
+  return postSolve(payload, "Dagdeviren Preset Tests", "/analysis/dagdeviren/preset-tests");
 }

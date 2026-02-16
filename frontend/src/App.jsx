@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { DEFAULT_SEED, METHODS } from "./constants/ui";
 import {
   buildAdjacency,
@@ -14,12 +15,28 @@ import {
   buildLatexComparisonCode,
   buildLatexConvergenceCode,
 } from "./utils/latex";
-import { solveBenchmarkGraph, solveGraph } from "./services/solverApi";
+import {
+  runDagdevirenAnalysis,
+  runDagdevirenPresetTests,
+  solveBenchmarkGraph,
+  solveGraph,
+} from "./services/solverApi";
 import HeaderBar from "./components/layout/HeaderBar";
 import ControlPanel from "./components/panels/ControlPanel";
 import GraphStudio from "./components/panels/GraphStudio";
 import WorkspacePanel from "./components/panels/WorkspacePanel";
 import BenchmarkPanel from "./components/panels/BenchmarkPanel";
+import DatasetAnalysisPanel from "./components/panels/DatasetAnalysisPanel";
+import PresetScaleTestsPanel from "./components/panels/PresetScaleTestsPanel";
+
+const DAGDEVIREN_PAPER_RATIOS = [2, 4, 6, 8];
+const DAGDEVIREN_SCALE_GROUPS = {
+  small: [10, 15, 20, 25],
+  medium: [50, 100, 150, 200],
+  large: [250, 500, 750, 1000],
+};
+const DAGDEVIREN_CAPACITY_BY_SCALE = { small: 18, medium: 16, large: 16 };
+const PRESET_SCALE_RUN_SCOPES = ["all", "small", "medium", "large"];
 
 export default function App() {
   const [graph, setGraph] = useState(null);
@@ -31,6 +48,7 @@ export default function App() {
   const [uploadErr, setUploadErr] = useState("");
   const [runErr, setRunErr] = useState("");
   const [benchmarkErr, setBenchmarkErr] = useState("");
+  const [datasetErr, setDatasetErr] = useState("");
 
   const [workspaceTab, setWorkspaceTab] = useState("overview");
   const [inspectorTab, setInspectorTab] = useState("node");
@@ -56,6 +74,21 @@ export default function App() {
 
   const [benchmarkRows, setBenchmarkRows] = useState(null);
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
+  const [datasetAnalysis, setDatasetAnalysis] = useState(null);
+  const [datasetRunning, setDatasetRunning] = useState(false);
+  const [presetScaleTests, setPresetScaleTests] = useState(null);
+  const [presetScaleTestsRunning, setPresetScaleTestsRunning] = useState(false);
+  const [datasetNFilter, setDatasetNFilter] = useState("");
+  const [datasetMFilter, setDatasetMFilter] = useState("");
+  const [datasetSFilter, setDatasetSFilter] = useState("");
+  const [datasetFilterMode, setDatasetFilterMode] = useState("guided");
+  const [datasetFilenameRaw, setDatasetFilenameRaw] = useState("");
+  const [datasetRatioFilterInput, setDatasetRatioFilterInput] = useState(
+    DAGDEVIREN_PAPER_RATIOS.join(",")
+  );
+  const [datasetMaxFilesInput, setDatasetMaxFilesInput] = useState("400");
+  const [presetScaleTestErr, setPresetScaleTestErr] = useState("");
+  const [presetScaleRunScope, setPresetScaleRunScope] = useState("all");
 
   const [themeMode, setThemeMode] = useState(() => {
     if (typeof window === "undefined") return "dark";
@@ -66,9 +99,76 @@ export default function App() {
   const fileRef = useRef(null);
   const [stageSize, setStageSize] = useState({ width: 760, height: 440 });
 
+  const parsePositiveIntInput = (value) => {
+    const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+
+  const datasetN = parsePositiveIntInput(datasetNFilter);
+  const datasetM = parsePositiveIntInput(datasetMFilter);
+  const datasetS = parsePositiveIntInput(datasetSFilter);
+  const datasetRatioFilter = useMemo(() => {
+    const tokens = String(datasetRatioFilterInput)
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const values = [];
+    for (const token of tokens) {
+      const parsed = Number.parseFloat(token);
+      if (Number.isFinite(parsed) && parsed > 0) values.push(Number(parsed.toFixed(6)));
+    }
+    return [...new Set(values)].sort((a, b) => a - b);
+  }, [datasetRatioFilterInput]);
+  const guidedRatioOverride = useMemo(() => {
+    if (datasetFilterMode !== "guided") return null;
+    if (datasetN === null || datasetM === null || datasetN <= 0) return null;
+    return Number((datasetM / datasetN).toFixed(6));
+  }, [datasetFilterMode, datasetN, datasetM]);
+  const effectiveDatasetRatios = useMemo(() => {
+    if (guidedRatioOverride !== null) return [guidedRatioOverride];
+    return datasetRatioFilter.length ? datasetRatioFilter : undefined;
+  }, [datasetRatioFilter, guidedRatioOverride]);
+  const datasetMaxFiles = clamp(parsePositiveIntInput(datasetMaxFilesInput) || 400, 1, 400);
+  const datasetFilenameContains = useMemo(() => {
+    if (datasetFilterMode === "raw") {
+      return String(datasetFilenameRaw || "").trim();
+    }
+    if (datasetN !== null && datasetM !== null && datasetS !== null) {
+      return `n${datasetN}_m${datasetM}_s${datasetS}`;
+    }
+    if (datasetN !== null && datasetM !== null) {
+      return `n${datasetN}_m${datasetM}_`;
+    }
+    if (datasetN !== null) {
+      return `n${datasetN}_`;
+    }
+    if (datasetM !== null) {
+      return `_m${datasetM}_`;
+    }
+    if (datasetS !== null) {
+      return `_s${datasetS}.txt`;
+    }
+    return "";
+  }, [datasetFilterMode, datasetFilenameRaw, datasetN, datasetM, datasetS]);
+
   const manualK = parseManualK(capKInput);
   const canSolve = Boolean(graph) && !running && (kMode === "auto" || manualK !== null);
   const canBenchmark = !benchmarkRunning && (kMode === "auto" || manualK !== null);
+  const canDatasetAnalysis = !datasetRunning && (kMode === "auto" || manualK !== null);
+  const canPresetScaleTests =
+    !presetScaleTestsRunning && !datasetRunning && (kMode === "auto" || manualK !== null);
+  const normalizedPresetScaleRunScope = PRESET_SCALE_RUN_SCOPES.includes(presetScaleRunScope)
+    ? presetScaleRunScope
+    : "all";
+  const presetScopeNodeCount =
+    normalizedPresetScaleRunScope === "all"
+      ? 0
+      : DAGDEVIREN_SCALE_GROUPS[normalizedPresetScaleRunScope]?.length || 0;
+  const presetScopeRatioCount = effectiveDatasetRatios?.length || DAGDEVIREN_PAPER_RATIOS.length;
+  const presetSyntheticTargetPerScale =
+    normalizedPresetScaleRunScope === "all"
+      ? 1
+      : Math.max(1, presetScopeNodeCount, presetScopeRatioCount);
 
   const loadEmbedded = useCallback(() => {
     setGraph(buildEmbeddedGraph(100, DEFAULT_SEED));
@@ -78,6 +178,8 @@ export default function App() {
     setUploadErr("");
     setRunErr("");
     setBenchmarkErr("");
+    setDatasetErr("");
+    setPresetScaleTestErr("");
     setSelectedMethod("hga");
     setSelectedNode(null);
     setHoverNode(null);
@@ -145,6 +247,26 @@ export default function App() {
 
   const handleOptimizeTrialsChange = useCallback((value) => {
     setOptimizeTrials(clamp(Number(value) || 6, 6, 36));
+  }, []);
+
+  const applyDatasetPaperPreset = useCallback(() => {
+    setDatasetFilterMode("guided");
+    setDatasetFilenameRaw("");
+    setDatasetNFilter("");
+    setDatasetMFilter("");
+    setDatasetSFilter("");
+    setDatasetRatioFilterInput(DAGDEVIREN_PAPER_RATIOS.join(","));
+    setDatasetMaxFilesInput("400");
+  }, []);
+
+  const clearDatasetFilters = useCallback(() => {
+    setDatasetFilterMode("guided");
+    setDatasetFilenameRaw("");
+    setDatasetNFilter("");
+    setDatasetMFilter("");
+    setDatasetSFilter("");
+    setDatasetRatioFilterInput("");
+    setDatasetMaxFilesInput("400");
   }, []);
 
   const solve = useCallback(async () => {
@@ -234,6 +356,100 @@ export default function App() {
       setBenchmarkRunning(false);
     }
   }, [benchmarkRunning, canBenchmark, kMode, manualK, optimizeGoal, optimizeTrials, popSize, generations]);
+
+  const runDataset = useCallback(async () => {
+    if (!canDatasetAnalysis || datasetRunning) return;
+    setDatasetRunning(true);
+    setDatasetErr("");
+    setDatasetAnalysis(null);
+
+    try {
+      const data = await runDagdevirenAnalysis({
+        maxFiles: datasetMaxFiles,
+        filenameContains: datasetFilenameContains || undefined,
+        ratios: effectiveDatasetRatios,
+        optimizeK: kMode === "auto",
+        optimizeGoal,
+        optimizeMaxTrials: optimizeTrials,
+        smallScales: DAGDEVIREN_SCALE_GROUPS.small,
+        mediumScales: DAGDEVIREN_SCALE_GROUPS.medium,
+        largeScales: DAGDEVIREN_SCALE_GROUPS.large,
+        capacityByScale: DAGDEVIREN_CAPACITY_BY_SCALE,
+        methods: ["gccvc", "grccvc", "gwccvc", "hga"],
+        includeExact: false,
+        capacityK: kMode === "manual" ? manualK || undefined : undefined,
+        popSize,
+        generations,
+        seed: DEFAULT_SEED,
+      });
+      setDatasetAnalysis(data || null);
+    } catch (error) {
+      setDatasetErr(error instanceof Error ? error.message : "Failed to run Dagdeviren analysis.");
+    } finally {
+      setDatasetRunning(false);
+    }
+  }, [
+    canDatasetAnalysis,
+    datasetRunning,
+    datasetMaxFiles,
+    datasetFilenameContains,
+    effectiveDatasetRatios,
+    optimizeGoal,
+    optimizeTrials,
+    kMode,
+    manualK,
+    popSize,
+    generations,
+  ]);
+
+  const runPresetScaleTests = useCallback(async () => {
+    if (!canPresetScaleTests || presetScaleTestsRunning) return;
+    setPresetScaleTestsRunning(true);
+    setPresetScaleTestErr("");
+    setPresetScaleTests(null);
+
+    try {
+      const data = await runDagdevirenPresetTests({
+        maxFilesPerScale: datasetMaxFiles,
+        filenameContains: datasetFilenameContains || undefined,
+        ratios: effectiveDatasetRatios,
+        targetScales:
+          normalizedPresetScaleRunScope === "all" ? undefined : [normalizedPresetScaleRunScope],
+        fillMissingWithSynthetic: false,
+        syntheticTargetPerScale: presetSyntheticTargetPerScale,
+        optimizeK: kMode === "auto",
+        optimizeGoal,
+        optimizeMaxTrials: optimizeTrials,
+        methods: ["gccvc", "grccvc", "gwccvc", "hga"],
+        includeExact: false,
+        capacityK: kMode === "manual" ? manualK || undefined : undefined,
+        popSize,
+        generations,
+        seed: DEFAULT_SEED,
+      });
+      setPresetScaleTests(data || null);
+    } catch (error) {
+      setPresetScaleTestErr(
+        error instanceof Error ? error.message : "Failed to run Dagdeviren preset scale tests."
+      );
+    } finally {
+      setPresetScaleTestsRunning(false);
+    }
+  }, [
+    canPresetScaleTests,
+    presetScaleTestsRunning,
+    datasetMaxFiles,
+    datasetFilenameContains,
+    effectiveDatasetRatios,
+    normalizedPresetScaleRunScope,
+    presetSyntheticTargetPerScale,
+    optimizeGoal,
+    optimizeTrials,
+    kMode,
+    manualK,
+    popSize,
+    generations,
+  ]);
 
   const graphStats = useMemo(() => computeGraphStats(graph), [graph]);
 
@@ -446,6 +662,33 @@ export default function App() {
   );
 
   const solveStatus = running ? "loading" : runErr ? "error" : results ? "completed" : "idle";
+  const loadingModal = useMemo(() => {
+    if (presetScaleTestsRunning) {
+      return {
+        title: "Running Preset Scale Tests",
+        description: "Analyzing dataset files, generating graph outputs, and updating charts.",
+      };
+    }
+    if (datasetRunning) {
+      return {
+        title: "Analyzing Dagdeviren Dataset",
+        description: "Processing graph files and preparing scale/connectivity chart data.",
+      };
+    }
+    if (running) {
+      return {
+        title: "Computing Graph Solution",
+        description: "Running algorithms and refreshing graph metrics and charts.",
+      };
+    }
+    if (benchmarkRunning) {
+      return {
+        title: "Running Benchmark",
+        description: "Evaluating benchmark instances and updating comparison charts.",
+      };
+    }
+    return null;
+  }, [presetScaleTestsRunning, datasetRunning, running, benchmarkRunning]);
 
   return (
     <div className={`studio theme-${themeMode}`}>
@@ -492,6 +735,33 @@ export default function App() {
             benchmarkRunning={benchmarkRunning}
             onRunBenchmark={runBenchmark}
             benchmarkErr={benchmarkErr}
+            canDatasetAnalysis={canDatasetAnalysis}
+            datasetRunning={datasetRunning}
+            onRunDatasetAnalysis={runDataset}
+            datasetErr={datasetErr}
+            canPresetScaleTests={canPresetScaleTests}
+            presetScaleTestsRunning={presetScaleTestsRunning}
+            onRunPresetScaleTests={runPresetScaleTests}
+            presetScaleTestErr={presetScaleTestErr}
+            presetScaleRunScope={normalizedPresetScaleRunScope}
+            onPresetScaleRunScopeChange={setPresetScaleRunScope}
+            datasetNFilter={datasetNFilter}
+            onDatasetNFilterChange={setDatasetNFilter}
+            datasetMFilter={datasetMFilter}
+            onDatasetMFilterChange={setDatasetMFilter}
+            datasetSFilter={datasetSFilter}
+            onDatasetSFilterChange={setDatasetSFilter}
+            datasetFilterMode={datasetFilterMode}
+            onDatasetFilterModeChange={setDatasetFilterMode}
+            datasetFilenameRaw={datasetFilenameRaw}
+            onDatasetFilenameRawChange={setDatasetFilenameRaw}
+            datasetRatioFilterInput={datasetRatioFilterInput}
+            onDatasetRatioFilterInputChange={setDatasetRatioFilterInput}
+            datasetMaxFilesInput={datasetMaxFilesInput}
+            onDatasetMaxFilesInputChange={setDatasetMaxFilesInput}
+            datasetFilenameContains={datasetFilenameContains}
+            onApplyDatasetPaperPreset={applyDatasetPaperPreset}
+            onClearDatasetFilters={clearDatasetFilters}
             graphStats={graphStats}
             activeK={activeK}
             kBounds={kBounds}
@@ -548,6 +818,8 @@ export default function App() {
             latexByTab={latexByTab}
             solveMeta={solveMeta}
             results={results}
+            datasetAnalysis={datasetAnalysis}
+            presetScaleTests={presetScaleTests}
           />
         </div>
       </main>
@@ -561,6 +833,44 @@ export default function App() {
           chartTheme={chartTheme}
         />
       </div>
+
+      <div className="relative z-1 mx-auto mt-4 max-w-[1680px]">
+        <DatasetAnalysisPanel
+          datasetAnalysis={datasetAnalysis}
+          datasetRunning={datasetRunning}
+          datasetErr={datasetErr}
+          chartTheme={chartTheme}
+        />
+      </div>
+
+      <div className="relative z-1 mx-auto mt-4 max-w-[1680px]">
+        <PresetScaleTestsPanel
+          presetScaleTests={presetScaleTests}
+          presetRunning={presetScaleTestsRunning}
+          presetErr={presetScaleTestErr}
+          chartTheme={chartTheme}
+        />
+      </div>
+
+      {loadingModal && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-[rgba(5,10,22,0.72)] backdrop-blur-[3px]">
+          <div
+            role="status"
+            aria-live="polite"
+            className="mx-4 w-full max-w-[520px] rounded-[20px] border border-[color-mix(in_srgb,var(--accent)_44%,var(--border))] bg-[linear-gradient(152deg,var(--panel-soft),var(--panel))] px-6 py-5 shadow-[var(--shadow)]"
+          >
+            <div className="flex items-start gap-4">
+              <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--accent)_46%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_12%,var(--panel-strong))]">
+                <Loader2 size={20} className="animate-spin text-[var(--accent)]" />
+              </span>
+              <div>
+                <p className="m-0 text-sm font-bold text-[var(--text-dim)]">{loadingModal.title}</p>
+                <p className="mt-1 text-sm text-[var(--text-muted)]">{loadingModal.description}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
