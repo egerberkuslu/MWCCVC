@@ -16,10 +16,11 @@ import {
   buildLatexConvergenceCode,
 } from "./utils/latex";
 import {
+  getDagdevirenPresetTestJob,
   runDagdevirenAnalysis,
-  runDagdevirenPresetTests,
   solveBenchmarkGraph,
   solveGraph,
+  startDagdevirenPresetTests,
 } from "./services/solverApi";
 import HeaderBar from "./components/layout/HeaderBar";
 import ControlPanel from "./components/panels/ControlPanel";
@@ -37,6 +38,7 @@ const DAGDEVIREN_SCALE_GROUPS = {
 };
 const DAGDEVIREN_CAPACITY_BY_SCALE = { small: 18, medium: 16, large: 16 };
 const PRESET_SCALE_RUN_SCOPES = ["all", "small", "medium", "large"];
+const PRESET_TEST_POLL_INTERVAL_MS = 1500;
 
 export default function App() {
   const [graph, setGraph] = useState(null);
@@ -409,7 +411,7 @@ export default function App() {
     setPresetScaleTests(null);
 
     try {
-      const data = await runDagdevirenPresetTests({
+      const jobStart = await startDagdevirenPresetTests({
         maxFilesPerScale: datasetMaxFiles,
         filenameContains: datasetFilenameContains || undefined,
         ratios: effectiveDatasetRatios,
@@ -427,7 +429,23 @@ export default function App() {
         generations,
         seed: DEFAULT_SEED,
       });
-      setPresetScaleTests(data || null);
+      const jobId = String(jobStart?.jobId || "").trim();
+      if (!jobId) {
+        throw new Error("Failed to start Dagdeviren preset tests job.");
+      }
+
+      for (;;) {
+        const jobState = await getDagdevirenPresetTestJob(jobId);
+        const status = String(jobState?.status || "").toLowerCase();
+        if (status === "completed") {
+          setPresetScaleTests(jobState?.result || null);
+          break;
+        }
+        if (status === "failed") {
+          throw new Error(jobState?.error || "Dagdeviren preset tests job failed.");
+        }
+        await new Promise((resolve) => setTimeout(resolve, PRESET_TEST_POLL_INTERVAL_MS));
+      }
     } catch (error) {
       setPresetScaleTestErr(
         error instanceof Error ? error.message : "Failed to run Dagdeviren preset scale tests."

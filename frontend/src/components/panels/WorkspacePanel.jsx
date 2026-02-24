@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import clsx from "clsx";
 import {
   Bar,
@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { MODEL_EQUATIONS, WORKSPACE_TABS } from "../../constants/ui";
 import { formatMs, formatNumber, formatPercent } from "../../utils/format";
+import { copyTextToClipboard } from "../../utils/clipboard";
 import MathBlock from "../common/MathBlock";
 
 const panel = "rounded-[26px] border border-[var(--border)] bg-[linear-gradient(152deg,var(--panel-soft),var(--panel))] p-5 shadow-[var(--shadow)] backdrop-blur-[18px] backdrop-saturate-[135%]";
@@ -41,8 +42,9 @@ export default function WorkspacePanel({
   presetScaleTests,
 }) {
   const copyLatex = useCallback(() => {
-    navigator.clipboard?.writeText(latexByTab[latexTab] || "");
+    copyTextToClipboard(latexByTab[latexTab] || "");
   }, [latexByTab, latexTab]);
+  const [rawJsonCopyStatus, setRawJsonCopyStatus] = useState("idle");
   const rawWorkspacePayload = useMemo(() => {
     const payload = {};
     if (solveMeta || results) {
@@ -66,6 +68,11 @@ export default function WorkspacePanel({
     () => JSON.stringify(rawWorkspacePayload, null, 2),
     [rawWorkspacePayload]
   );
+  const copyRawWorkspaceJson = useCallback(async () => {
+    const copied = await copyTextToClipboard(rawWorkspaceJson);
+    setRawJsonCopyStatus(copied ? "copied" : "error");
+    setTimeout(() => setRawJsonCopyStatus("idle"), 1800);
+  }, [rawWorkspaceJson]);
 
   return (
     <section className={clsx(panel, "reveal delay-4 min-w-0")}>
@@ -138,7 +145,7 @@ export default function WorkspacePanel({
                 <SummaryCell label="Fastest" value={solverSummary?.fastest?.label || "-"} />
                 <SummaryCell label="Valid Solutions" value={solverSummary ? `${solverSummary.validCount}/${solverSummary.totalCount}` : "-"} />
                 <SummaryCell
-                  label="Active CapUtil"
+                  label="Active CapUtil (Bound)"
                   value={
                     activeMethod?.verification?.totalCapacity > 0
                       ? formatPercent((activeMethod.verification.edgeCount / activeMethod.verification.totalCapacity) * 100)
@@ -161,7 +168,7 @@ export default function WorkspacePanel({
                       <th><MathBlock tex="|S|" /></th>
                       <th>Cover</th>
                       <th>Conn</th>
-                      <th>Cap</th>
+                      <th>Cap (Exact)</th>
                       <th>Valid</th>
                       <th><MathBlock tex="\Delta\%" /></th>
                       <th>Time</th>
@@ -387,7 +394,29 @@ export default function WorkspacePanel({
 
       {workspaceTab === "raw" && (
         <div className="animate-fade-in flex flex-col gap-4">
-          <Card title="Raw JSON">
+          <Card
+            title="Raw JSON"
+            action={
+              <button
+                type="button"
+                className={clsx(
+                  "cursor-pointer rounded-full border px-4 py-2 text-sm font-bold transition-all",
+                  rawJsonCopyStatus === "copied"
+                    ? "border-[color-mix(in_srgb,var(--accent)_46%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_12%,var(--panel-strong))] text-[var(--accent)]"
+                    : rawJsonCopyStatus === "error"
+                      ? "border-[color-mix(in_srgb,var(--danger)_48%,var(--border))] bg-[color-mix(in_srgb,var(--danger)_10%,var(--panel-strong))] text-[var(--danger)]"
+                      : "border-[var(--border)] bg-[color-mix(in_srgb,var(--panel-strong)_95%,transparent)] text-[var(--text-dim)] hover:-translate-y-0.5 hover:border-[color-mix(in_srgb,var(--accent)_46%,var(--border))]"
+                )}
+                onClick={copyRawWorkspaceJson}
+              >
+                {rawJsonCopyStatus === "copied"
+                  ? "Copied"
+                  : rawJsonCopyStatus === "error"
+                    ? "Copy failed"
+                    : "Copy"}
+              </button>
+            }
+          >
             <pre className="mt-3 max-h-[360px] overflow-auto rounded-[12px] border border-[var(--border)] bg-[color-mix(in_srgb,var(--panel-strong)_98%,transparent)] p-4 font-mono text-sm leading-relaxed text-[var(--text-dim)]">
               {rawWorkspaceJson}
             </pre>
@@ -410,7 +439,7 @@ export default function WorkspacePanel({
   );
 }
 
-function Card({ title, children, className = "" }) {
+function Card({ title, action = null, children, className = "" }) {
   return (
     <article
       className={clsx(
@@ -418,7 +447,10 @@ function Card({ title, children, className = "" }) {
         className
       )}
     >
-      <h3 className="m-0 text-base font-bold tracking-tight">{title}</h3>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="m-0 text-base font-bold tracking-tight">{title}</h3>
+        {action}
+      </div>
       {children}
     </article>
   );

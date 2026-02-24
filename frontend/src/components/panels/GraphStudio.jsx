@@ -230,7 +230,15 @@ export default function GraphStudio({
                 <div className="grid gap-2">
                   <StatusBadge ok={activeMethod.verification.isCover} label="Vertex Cover" />
                   <StatusBadge ok={activeMethod.verification.isConnected} label="Connected" />
-                  <StatusBadge ok={activeMethod.verification.capacityFeasible} label="Capacity" />
+                  <StatusBadge
+                    ok={activeMethod.verification.capacityFeasible}
+                    label="Capacity (Exact)"
+                    hint={
+                      activeMethod.verification.capacityCheck === "exact-edge-assignment"
+                        ? "Checks exact edge-to-cover-node assignability under per-node capacity K."
+                        : "Checks capacity feasibility."
+                    }
+                  />
                   <StatusBadge ok={activeMethod.verification.isValid} label="Valid CCVC" />
                 </div>
               ) : (

@@ -41,7 +41,10 @@ export const MODEL_EQUATIONS = [
   { label: "Capacity Utilization", tex: "\\text{CapUtil} = \\frac{|E|}{|S| \\cdot K}" },
   { label: "Connectivity", tex: "G[S] \\text{ is connected}" },
   { label: "Cover Constraint", tex: "\\forall (u,v) \\in E: u \\in S \\lor v \\in S" },
-  { label: "Capacity Constraint", tex: "\\forall v \\in S: |\\{(v,u) \\in E : u \\notin S\\}| \\leq K" },
+  {
+    label: "Capacity Constraint (Exact)",
+    tex: "\\exists\\,\\phi:E\\to S,\\ \\phi(u,v)\\in\\{u,v\\}\\cap S,\\ \\forall v\\in S:\\ |\\phi^{-1}(v)|\\le K",
+  },
 ];
 
 export const TABLE_HEADERS_TEX = {

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import math
 import random
+import threading
+import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,6 +37,11 @@ DAGDEVIREN_DEFAULT_SMALL_SCALES = [10, 15, 20, 25]
 DAGDEVIREN_DEFAULT_MEDIUM_SCALES = [50, 100, 150, 200]
 DAGDEVIREN_DEFAULT_LARGE_SCALES = [250, 500, 750, 1000]
 DAGDEVIREN_DEFAULT_CAPACITY_BY_SCALE = {"small": 18, "medium": 16, "large": 16}
+PRESET_TEST_JOB_TTL_SECONDS = 6 * 60 * 60
+PRESET_TEST_JOB_MAX_RECORDS = 128
+
+_PRESET_TEST_JOBS: Dict[str, Dict[str, Any]] = {}
+_PRESET_TEST_JOBS_LOCK = threading.Lock()
 
 
 class VertexIn(BaseModel):
@@ -1034,8 +1043,33 @@ def _planned_synthetic_specs(
     return planned
 
 
-@app.post("/api/analysis/dagdeviren/preset-tests")
-def dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> Dict[str, Any]:
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _prune_preset_test_jobs_locked(now_ts: float) -> None:
+    expired_job_ids: List[str] = []
+    for job_id, job in _PRESET_TEST_JOBS.items():
+        status = str(job.get("status") or "")
+        if status in {"queued", "running"}:
+            continue
+        reference_ts = float(job.get("completedAtTs") or job.get("createdAtTs") or 0.0)
+        if reference_ts > 0.0 and now_ts - reference_ts > PRESET_TEST_JOB_TTL_SECONDS:
+            expired_job_ids.append(job_id)
+    for job_id in expired_job_ids:
+        _PRESET_TEST_JOBS.pop(job_id, None)
+
+    overflow = len(_PRESET_TEST_JOBS) - PRESET_TEST_JOB_MAX_RECORDS
+    if overflow > 0:
+        ordered = sorted(
+            _PRESET_TEST_JOBS.items(),
+            key=lambda item: float(item[1].get("createdAtTs") or 0.0),
+        )
+        for job_id, _ in ordered[:overflow]:
+            _PRESET_TEST_JOBS.pop(job_id, None)
+
+
+def _run_dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> Dict[str, Any]:
     dataset_dir = resolve_dataset_dir(payload.datasetDir)
     methods = payload.methods or ["gccvc", "grccvc", "gwccvc", "hga"]
     ratios = payload.ratios or list(DAGDEVIREN_DEFAULT_RATIOS)
@@ -1247,6 +1281,102 @@ def dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> Dict[s
         "graphAnalysis": graph_analysis,
         "presetScaleTests": preset_scale_tests,
     }
+
+
+def _preset_test_job_worker(job_id: str, payload_data: Dict[str, Any]) -> None:
+    started_at_ts = time.time()
+    with _PRESET_TEST_JOBS_LOCK:
+        job = _PRESET_TEST_JOBS.get(job_id)
+        if job is None:
+            return
+        job["status"] = "running"
+        job["startedAt"] = _utc_now_iso()
+        job["startedAtTs"] = started_at_ts
+
+    try:
+        payload = DagdevirenPresetScaleTestRequest.model_validate(payload_data)
+        result = _run_dagdeviren_preset_tests(payload)
+    except Exception as exc:
+        completed_at_ts = time.time()
+        with _PRESET_TEST_JOBS_LOCK:
+            job = _PRESET_TEST_JOBS.get(job_id)
+            if job is None:
+                return
+            job["status"] = "failed"
+            job["error"] = str(exc)
+            job["completedAt"] = _utc_now_iso()
+            job["completedAtTs"] = completed_at_ts
+            job["result"] = None
+        return
+
+    completed_at_ts = time.time()
+    with _PRESET_TEST_JOBS_LOCK:
+        job = _PRESET_TEST_JOBS.get(job_id)
+        if job is None:
+            return
+        job["status"] = "completed"
+        job["error"] = None
+        job["completedAt"] = _utc_now_iso()
+        job["completedAtTs"] = completed_at_ts
+        job["result"] = result
+
+
+@app.post("/api/analysis/dagdeviren/preset-tests")
+def dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> Dict[str, Any]:
+    return _run_dagdeviren_preset_tests(payload)
+
+
+@app.post("/api/analysis/dagdeviren/preset-tests/start")
+def dagdeviren_preset_tests_start(payload: DagdevirenPresetScaleTestRequest) -> Dict[str, Any]:
+    job_id = uuid.uuid4().hex
+    created_at_ts = time.time()
+    payload_data = payload.model_dump()
+    created_at = _utc_now_iso()
+    with _PRESET_TEST_JOBS_LOCK:
+        _prune_preset_test_jobs_locked(created_at_ts)
+        _PRESET_TEST_JOBS[job_id] = {
+            "status": "queued",
+            "createdAt": created_at,
+            "createdAtTs": created_at_ts,
+            "startedAt": None,
+            "startedAtTs": None,
+            "completedAt": None,
+            "completedAtTs": None,
+            "error": None,
+            "result": None,
+        }
+
+    worker = threading.Thread(
+        target=_preset_test_job_worker,
+        args=(job_id, payload_data),
+        daemon=True,
+    )
+    worker.start()
+    return {
+        "jobId": job_id,
+        "status": "queued",
+        "createdAt": created_at,
+    }
+
+
+@app.get("/api/analysis/dagdeviren/preset-tests/jobs/{job_id}")
+def dagdeviren_preset_tests_job_status(job_id: str) -> Dict[str, Any]:
+    with _PRESET_TEST_JOBS_LOCK:
+        _prune_preset_test_jobs_locked(time.time())
+        job = _PRESET_TEST_JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Preset test job not found.")
+        payload: Dict[str, Any] = {
+            "jobId": job_id,
+            "status": job.get("status"),
+            "createdAt": job.get("createdAt"),
+            "startedAt": job.get("startedAt"),
+            "completedAt": job.get("completedAt"),
+            "error": job.get("error"),
+        }
+        if job.get("status") == "completed":
+            payload["result"] = job.get("result")
+        return payload
 
 
 @app.post("/api/analysis/dagdeviren/run")

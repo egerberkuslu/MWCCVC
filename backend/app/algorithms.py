@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import heapq
 import random
+import sys
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -32,6 +34,34 @@ class Graph:
     edges: Dict[Tuple[int, int], Edge]
     adj: Dict[int, Set[int]]
     capacity_k: int
+
+
+class _UnionFind:
+    def __init__(self, size: int) -> None:
+        self.parent = list(range(size))
+        self.rank = [0] * size
+        self.group_count = size
+
+    def find(self, item: int) -> int:
+        while self.parent[item] != item:
+            self.parent[item] = self.parent[self.parent[item]]
+            item = self.parent[item]
+        return item
+
+    def union(self, left: int, right: int) -> bool:
+        left_root = self.find(left)
+        right_root = self.find(right)
+        if left_root == right_root:
+            return False
+        if self.rank[left_root] < self.rank[right_root]:
+            self.parent[left_root] = right_root
+        elif self.rank[left_root] > self.rank[right_root]:
+            self.parent[right_root] = left_root
+        else:
+            self.parent[right_root] = left_root
+            self.rank[left_root] += 1
+        self.group_count -= 1
+        return True
 
 
 def edge_key(u: int, v: int) -> Tuple[int, int]:
@@ -131,24 +161,25 @@ def get_edge_candidates(
     return candidates
 
 
-def get_cover_components(graph: Graph, cover_set: Set[int]) -> List[List[int]]:
-    visited: Set[int] = set()
-    components: List[List[int]] = []
+def get_cover_components(graph: Graph, cover_set: Set[int]) -> List[Set[int]]:
+    unvisited = set(cover_set)
+    components: List[Set[int]] = []
 
-    for node_id in cover_set:
-        if node_id in visited:
-            continue
-        stack = [node_id]
-        visited.add(node_id)
-        component: List[int] = []
-        while stack:
-            u = stack.pop()
-            component.append(u)
-            for w in graph.adj.get(u, set()):
-                if w in cover_set and w not in visited:
-                    visited.add(w)
-                    stack.append(w)
+    while unvisited:
+        start = next(iter(unvisited))
+        unvisited.remove(start)
+        component = {start}
+        queue: deque[int] = deque([start])
+
+        while queue:
+            current = queue.popleft()
+            for neighbor_id in graph.adj.get(current, set()):
+                if neighbor_id in unvisited:
+                    unvisited.remove(neighbor_id)
+                    component.add(neighbor_id)
+                    queue.append(neighbor_id)
         components.append(component)
+
     return components
 
 
@@ -160,25 +191,135 @@ def is_vertex_cover(graph: Graph, cover_set: Set[int]) -> bool:
     return all(edge.u in cover_set or edge.v in cover_set for edge in graph.edges.values())
 
 
-def check_capacity_feasibility(graph: Graph, cover_set: Set[int]) -> bool:
-    total_cap = len(cover_set) * graph.capacity_k
-    if total_cap < len(graph.edges):
+def _check_capacity_feasibility_raw(
+    edge_data: Sequence[Tuple[int, int]],
+    cover_set: Set[int],
+    capacity_k: int,
+) -> bool:
+    if capacity_k <= 0:
+        return False
+    edge_count = len(edge_data)
+    if edge_count == 0:
+        return True
+    if not cover_set:
+        return False
+    if len(cover_set) * capacity_k < edge_count:
         return False
 
-    usage = {node_id: 0 for node_id in cover_set}
-    matched = 0
-    for edge in graph.edges.values():
-        u_in = edge.u in cover_set
-        v_in = edge.v in cover_set
-        if u_in and usage[edge.u] < graph.capacity_k:
-            usage[edge.u] += 1
-            matched += 1
-        elif v_in and usage[edge.v] < graph.capacity_k:
-            usage[edge.v] += 1
-            matched += 1
-        elif u_in and v_in:
-            continue
-    return matched >= len(graph.edges)
+    forced_usage = {node_id: 0 for node_id in cover_set}
+    flexible_edges: List[Tuple[int, int]] = []
+
+    for raw_u, raw_v in edge_data:
+        u = int(raw_u)
+        v = int(raw_v)
+        u_in = u in cover_set
+        v_in = v in cover_set
+        if not u_in and not v_in:
+            return False
+        if u_in and v_in:
+            flexible_edges.append((u, v))
+        elif u_in:
+            forced_usage[u] += 1
+        else:
+            forced_usage[v] += 1
+
+    residual = {}
+    for node_id in cover_set:
+        remain = capacity_k - forced_usage[node_id]
+        if remain < 0:
+            return False
+        residual[node_id] = remain
+
+    if not flexible_edges:
+        return True
+    if sum(residual.values()) < len(flexible_edges):
+        return False
+
+    cover_nodes = [node_id for node_id, remain in residual.items() if remain > 0]
+    if not cover_nodes:
+        return False
+
+    source = 0
+    edge_node_start = 1
+    cover_node_start = edge_node_start + len(flexible_edges)
+    sink = cover_node_start + len(cover_nodes)
+    network: List[List[List[int]]] = [[] for _ in range(sink + 1)]
+
+    def add_flow_edge(frm: int, to: int, cap: int) -> None:
+        forward = [to, len(network[to]), cap]
+        backward = [frm, len(network[frm]), 0]
+        network[frm].append(forward)
+        network[to].append(backward)
+
+    cover_index = {node_id: cover_node_start + idx for idx, node_id in enumerate(cover_nodes)}
+
+    for idx, (u, v) in enumerate(flexible_edges):
+        edge_node = edge_node_start + idx
+        add_flow_edge(source, edge_node, 1)
+        if u in cover_index:
+            add_flow_edge(edge_node, cover_index[u], 1)
+        if v in cover_index and v != u:
+            add_flow_edge(edge_node, cover_index[v], 1)
+
+    for node_id in cover_nodes:
+        add_flow_edge(cover_index[node_id], sink, residual[node_id])
+
+    def max_flow(src: int, dst: int) -> int:
+        flow = 0
+        n_nodes = len(network)
+        inf = 10**9
+        if n_nodes + 100 > sys.getrecursionlimit():
+            sys.setrecursionlimit(n_nodes + 100)
+
+        while True:
+            level = [-1] * n_nodes
+            queue: deque[int] = deque([src])
+            level[src] = 0
+
+            while queue:
+                current = queue.popleft()
+                for nxt, _rev, cap in network[current]:
+                    if cap <= 0 or level[nxt] >= 0:
+                        continue
+                    level[nxt] = level[current] + 1
+                    queue.append(nxt)
+
+            if level[dst] < 0:
+                break
+
+            progress = [0] * n_nodes
+
+            def dfs(current: int, pushed: int) -> int:
+                if current == dst:
+                    return pushed
+                while progress[current] < len(network[current]):
+                    edge_idx = progress[current]
+                    nxt, rev, cap = network[current][edge_idx]
+                    if cap > 0 and level[nxt] == level[current] + 1:
+                        sent = dfs(nxt, min(pushed, cap))
+                        if sent > 0:
+                            network[current][edge_idx][2] -= sent
+                            network[nxt][rev][2] += sent
+                            return sent
+                    progress[current] += 1
+                return 0
+
+            while True:
+                sent = dfs(src, inf)
+                if sent == 0:
+                    break
+                flow += sent
+                if flow == len(flexible_edges):
+                    return flow
+
+        return flow
+
+    return max_flow(source, sink) == len(flexible_edges)
+
+
+def check_capacity_feasibility(graph: Graph, cover_set: Set[int]) -> bool:
+    edge_data = [(edge.u, edge.v) for edge in graph.edges.values()]
+    return _check_capacity_feasibility_raw(edge_data, cover_set, graph.capacity_k)
 
 
 def repair_connectivity(graph: Graph, cover_set: Set[int]) -> Set[int]:
@@ -234,6 +375,146 @@ def repair_connectivity(graph: Graph, cover_set: Set[int]) -> Set[int]:
         else:
             break
 
+    return cs
+
+
+def _reconstruct_path(previous: Dict[int, int], end_node: int) -> List[int]:
+    path = [end_node]
+    while end_node in previous:
+        end_node = previous[end_node]
+        path.append(end_node)
+    path.reverse()
+    return path
+
+
+def _add_path_to_cover(graph: Graph, cover_set: Set[int], path: Sequence[int]) -> None:
+    for node_id in path:
+        node = graph.nodes[node_id]
+        if node.color != "BLACK":
+            node.color = "BLACK"
+            cover_set.add(node_id)
+        for neighbor_id in graph.adj.get(node_id, set()):
+            neighbor = graph.nodes[neighbor_id]
+            if neighbor.color in {"WHITE", "RED"}:
+                neighbor.color = "GRAY"
+
+
+def _shortest_path_between_components_capacity_aware(
+    graph: Graph,
+    cover_set: Set[int],
+    comp_a: Set[int],
+    comp_b: Set[int],
+) -> Tuple[float, List[int]]:
+    targets = set(comp_b)
+    distances: Dict[int, float] = {}
+    previous: Dict[int, int] = {}
+    heap: List[Tuple[float, int]] = []
+
+    for node_id in comp_a:
+        distances[node_id] = 0.0
+        heapq.heappush(heap, (0.0, node_id))
+
+    while heap:
+        cost, current = heapq.heappop(heap)
+        if cost > distances.get(current, float("inf")):
+            continue
+        if current in targets:
+            return cost, _reconstruct_path(previous, current)
+
+        for neighbor_id in graph.adj.get(current, set()):
+            neighbor = graph.nodes[neighbor_id]
+            if neighbor_id not in cover_set and neighbor.remaining <= 0:
+                continue
+            step_cost = 0.0 if neighbor_id in cover_set else neighbor.weight
+            new_cost = cost + step_cost
+            if new_cost < distances.get(neighbor_id, float("inf")):
+                distances[neighbor_id] = new_cost
+                previous[neighbor_id] = current
+                heapq.heappush(heap, (new_cost, neighbor_id))
+
+    return float("inf"), []
+
+
+def _build_bridges_capacity_aware(graph: Graph, cover_set: Set[int]) -> bool:
+    components = get_cover_components(graph, cover_set)
+    if len(components) <= 1:
+        return False
+
+    connections: List[Tuple[float, int, int, List[int]]] = []
+    for i in range(len(components)):
+        for j in range(i + 1, len(components)):
+            cost, path = _shortest_path_between_components_capacity_aware(
+                graph,
+                cover_set,
+                components[i],
+                components[j],
+            )
+            if path:
+                connections.append((cost, i, j, path))
+
+    if not connections:
+        return False
+
+    connections.sort(key=lambda item: item[0])
+    union_find = _UnionFind(len(components))
+    added = False
+
+    for _cost, i, j, path in connections:
+        if union_find.union(i, j):
+            _add_path_to_cover(graph, cover_set, path)
+            added = True
+            if union_find.group_count == 1:
+                break
+
+    return added
+
+
+def _repair_connectivity_capacity_aware(graph: Graph, cover_set: Set[int]) -> Set[int]:
+    cs = set(cover_set)
+    while len(get_cover_components(graph, cs)) > 1:
+        if not _build_bridges_capacity_aware(graph, cs):
+            break
+    return cs
+
+
+def _shortest_path_unconstrained(graph: Graph, start: int, goal: int) -> List[int]:
+    queue: deque[int] = deque([start])
+    previous: Dict[int, Optional[int]] = {start: None}
+
+    while queue:
+        current = queue.popleft()
+        if current == goal:
+            break
+        for neighbor_id in graph.adj.get(current, set()):
+            if neighbor_id in previous:
+                continue
+            previous[neighbor_id] = current
+            queue.append(neighbor_id)
+
+    if goal not in previous:
+        return []
+
+    path: List[int] = []
+    node_id: Optional[int] = goal
+    while node_id is not None:
+        path.append(node_id)
+        node_id = previous[node_id]
+    path.reverse()
+    return path
+
+
+def _repair_connectivity_gwccvc(graph: Graph, cover_set: Set[int]) -> Set[int]:
+    cs = set(cover_set)
+    components = get_cover_components(graph, cs)
+    if len(components) <= 1:
+        return cs
+
+    reps = [min(component, key=lambda node_id: graph.nodes[node_id].weight) for component in components]
+    base = reps[0]
+    for rep in reps[1:]:
+        path = _shortest_path_unconstrained(graph, base, rep)
+        if path:
+            _add_path_to_cover(graph, cs, path)
     return cs
 
 
@@ -325,12 +606,14 @@ def force_cover_remaining(
             cover_edges_from_node(graph, node, edge_sorter, True)
 
     safety = 0
-    while get_uncovered_edges(graph) and safety < len(graph.nodes):
-        safety += 1
+    while get_uncovered_edges(graph):
         node = pick_next(graph, True)
         if node is None:
             break
         select_node(graph, node, edge_sorter, cover_set, True)
+        safety += 1
+        if safety > len(graph.nodes):
+            break
 
 
 def random_choice(rnd: random.Random, items: Sequence[Node]) -> Optional[Node]:
@@ -373,6 +656,7 @@ def solve_gccvc(
             key=lambda candidate: (
                 -uncovered_degree(g, candidate[0], True),
                 g.nodes[candidate[0]].weight,
+                candidate[0],
             )
         )
         return candidates
@@ -387,7 +671,7 @@ def solve_gccvc(
     if get_uncovered_edges(graph):
         force_cover_remaining(graph, cover_set, pick_next, edge_sorter)
 
-    final_set = repair_connectivity(graph, cover_set)
+    final_set = _repair_connectivity_capacity_aware(graph, cover_set)
     return {
         "cover": final_set,
         "time_ms": (time.perf_counter() - t0) * 1000.0,
@@ -439,7 +723,7 @@ def solve_grccvc(
     if get_uncovered_edges(graph):
         force_cover_remaining(graph, cover_set, pick_next, edge_sorter)
 
-    final_set = repair_connectivity(graph, cover_set)
+    final_set = _repair_connectivity_capacity_aware(graph, cover_set)
     return {
         "cover": final_set,
         "time_ms": (time.perf_counter() - t0) * 1000.0,
@@ -494,7 +778,7 @@ def solve_gwccvc(
     if get_uncovered_edges(graph):
         force_cover_remaining(graph, cover_set, pick_next, edge_sorter)
 
-    final_set = repair_connectivity(graph, cover_set)
+    final_set = _repair_connectivity_gwccvc(graph, cover_set)
     return {
         "cover": final_set,
         "time_ms": (time.perf_counter() - t0) * 1000.0,
@@ -891,7 +1175,9 @@ def verify_solution(
 
     components = get_cover_components_simple(cover_set, adjacency)
     total_weight = sum(w_map.get(node_id, 0.0) for node_id in cover_set)
-    cap_ok = len(cover_set) * capacity_k >= len(normalized_edges)
+    total_capacity = len(cover_set) * capacity_k
+    capacity_bound_satisfied = total_capacity >= len(normalized_edges)
+    cap_ok = _check_capacity_feasibility_raw(normalized_edges, cover_set, capacity_k)
 
     return {
         "isCover": uncovered == 0,
@@ -900,9 +1186,10 @@ def verify_solution(
         "numComponents": len(components),
         "totalWeight": round(total_weight, 3),
         "coverSize": len(cover_set),
+        "capacityCheck": "exact-edge-assignment",
+        "capacityBoundSatisfied": capacity_bound_satisfied,
         "capacityFeasible": cap_ok,
-        "totalCapacity": len(cover_set) * capacity_k,
+        "totalCapacity": total_capacity,
         "edgeCount": len(normalized_edges),
         "isValid": uncovered == 0 and len(components) <= 1 and cap_ok,
     }
-

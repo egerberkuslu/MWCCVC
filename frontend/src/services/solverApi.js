@@ -30,3 +30,16 @@ export async function runDagdevirenAnalysis(payload) {
 export async function runDagdevirenPresetTests(payload) {
   return postSolve(payload, "Dagdeviren Preset Tests", "/analysis/dagdeviren/preset-tests");
 }
+
+export async function startDagdevirenPresetTests(payload) {
+  return postSolve(payload, "Dagdeviren Preset Tests", "/analysis/dagdeviren/preset-tests/start");
+}
+
+export async function getDagdevirenPresetTestJob(jobId) {
+  const response = await fetch(`${API_BASE}/analysis/dagdeviren/preset-tests/jobs/${jobId}`);
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Dagdeviren Preset Tests status API returned ${response.status}`);
+  }
+  return response.json();
+}

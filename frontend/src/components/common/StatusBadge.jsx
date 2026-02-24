@@ -2,9 +2,10 @@ import React from "react";
 import { CheckCircle2, XCircle } from "lucide-react";
 import clsx from "clsx";
 
-export default function StatusBadge({ ok, label }) {
+export default function StatusBadge({ ok, label, hint = "" }) {
   return (
     <span
+      title={hint}
       className={clsx(
         "inline-flex w-fit items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-bold",
         ok

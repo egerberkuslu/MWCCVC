@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import clsx from "clsx";
 import { FlaskConical, Loader2 } from "lucide-react";
 import {
@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { METHODS } from "../../constants/ui";
 import { formatNumber, formatPercent } from "../../utils/format";
+import { copyTextToClipboard } from "../../utils/clipboard";
 
 const panel =
   "rounded-[26px] border border-[var(--border)] bg-[linear-gradient(152deg,var(--panel-soft),var(--panel))] p-5 shadow-[var(--shadow)] backdrop-blur-[18px] backdrop-saturate-[135%]";
@@ -134,6 +135,7 @@ export default function PresetScaleTestsPanel({
   chartTheme,
 }) {
   const [activeScale, setActiveScale] = useState("small");
+  const [rawJsonCopyStatus, setRawJsonCopyStatus] = useState("idle");
   const meta = presetScaleTests?.meta || {};
   const selection = presetScaleTests?.selection || {};
   const requestedScales = Array.isArray(meta.targetScales) && meta.targetScales.length
@@ -177,6 +179,11 @@ export default function PresetScaleTestsPanel({
     () => JSON.stringify(presetScaleTests, null, 2),
     [presetScaleTests]
   );
+  const copyRawPresetJson = useCallback(async () => {
+    const copied = await copyTextToClipboard(rawPresetJson);
+    setRawJsonCopyStatus(copied ? "copied" : "error");
+    setTimeout(() => setRawJsonCopyStatus("idle"), 1800);
+  }, [rawPresetJson]);
 
   return (
     <section className={clsx(panel, "reveal delay-6 min-w-0")}>
@@ -404,7 +411,27 @@ export default function PresetScaleTestsPanel({
           </div>
 
           <div className="rounded-[12px] border border-[var(--border)] bg-[color-mix(in_srgb,var(--panel-strong)_95%,transparent)] p-3">
-            <p className="m-0 text-sm font-semibold text-[var(--text-dim)]">Raw JSON</p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="m-0 text-sm font-semibold text-[var(--text-dim)]">Raw JSON</p>
+              <button
+                type="button"
+                className={clsx(
+                  "cursor-pointer rounded-full border px-3.5 py-1.5 text-xs font-bold transition-all",
+                  rawJsonCopyStatus === "copied"
+                    ? "border-[color-mix(in_srgb,var(--accent)_46%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_12%,var(--panel-strong))] text-[var(--accent)]"
+                    : rawJsonCopyStatus === "error"
+                      ? "border-[color-mix(in_srgb,var(--danger)_48%,var(--border))] bg-[color-mix(in_srgb,var(--danger)_10%,var(--panel-strong))] text-[var(--danger)]"
+                      : "border-[var(--border)] bg-[color-mix(in_srgb,var(--panel-strong)_95%,transparent)] text-[var(--text-dim)] hover:-translate-y-0.5 hover:border-[color-mix(in_srgb,var(--accent)_46%,var(--border))]"
+                )}
+                onClick={copyRawPresetJson}
+              >
+                {rawJsonCopyStatus === "copied"
+                  ? "Copied"
+                  : rawJsonCopyStatus === "error"
+                    ? "Copy failed"
+                    : "Copy"}
+              </button>
+            </div>
             <p className="mt-1 text-xs text-[var(--text-muted)]">
               Complete preset response payload used to build charts and summary cards.
             </p>
