@@ -63,7 +63,7 @@ export function buildLatexBarsCode(methodRows) {
 }
 
 export function buildLatexConvergenceCode(convergenceData) {
-  if (!convergenceData.length) return "% Run HGA to generate convergence code.";
+  if (!convergenceData.length) return "% Run HGA-family methods to generate convergence code.";
 
   const coords = convergenceData.map((row) => `(${row.gen}, ${row.bestWeight.toFixed(6)})`).join(" ");
 
@@ -78,6 +78,6 @@ export function buildLatexConvergenceCode(convergenceData) {
 \\addplot[smooth, thick] coordinates {${coords}};
 \\end{axis}
 \\end{tikzpicture}
-\\caption{HGA convergence trend}
+\\caption{Metaheuristic convergence trend}
 \\end{figure}`;
 }

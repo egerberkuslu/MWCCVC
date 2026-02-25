@@ -7,15 +7,26 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from ..algorithms import (
     solve_exact,
+    solve_exact_time_limited,
     solve_gccvc,
     solve_grccvc,
     solve_gwccvc,
     solve_hga,
+    solve_hga_v2,
+    solve_weighted_and_cover_oriented_hga,
     verify_solution,
 )
 from .datareader import list_dataset_files, parse_scale_from_filename, read_graph_from_file
 
-SUPPORTED_METHODS = {"gccvc", "grccvc", "gwccvc", "hga", "exact"}
+SUPPORTED_METHODS = {
+    "gccvc",
+    "grccvc",
+    "gwccvc",
+    "hga",
+    "hga_v2",
+    "weighted-and-cover-oriented-hga",
+    "exact",
+}
 SCALE_KEYS = ("small", "medium", "large")
 SUPPORTED_OPTIMIZE_GOALS = {"min-feasible-k", "best-weight"}
 
@@ -225,6 +236,8 @@ def _run_method(
     pop_size: int,
     generations: int,
     seed: int,
+    exact_time_limit_ms: Optional[float] = None,
+    exact_max_n: Optional[int] = 18,
 ) -> Optional[Dict[str, Any]]:
     if method == "gccvc":
         result = solve_gccvc(vertex_data, edge_data, capacity_k, seed)
@@ -232,13 +245,34 @@ def _run_method(
         result = solve_grccvc(vertex_data, edge_data, capacity_k, seed)
     elif method == "gwccvc":
         result = solve_gwccvc(vertex_data, edge_data, capacity_k, seed)
-    elif method == "hga":
+    elif method in {"hga", "hga_v2", "weighted-and-cover-oriented-hga"}:
         effective_pop, effective_gens = _adaptive_hga_budget(len(vertex_data), pop_size, generations)
-        result = solve_hga(vertex_data, edge_data, capacity_k, effective_pop, effective_gens, seed)
+        if method == "hga_v2":
+            result = solve_hga_v2(vertex_data, edge_data, capacity_k, effective_pop, effective_gens, seed)
+        elif method == "weighted-and-cover-oriented-hga":
+            result = solve_weighted_and_cover_oriented_hga(
+                vertex_data,
+                edge_data,
+                capacity_k,
+                effective_pop,
+                effective_gens,
+                seed,
+            )
+        else:
+            result = solve_hga(vertex_data, edge_data, capacity_k, effective_pop, effective_gens, seed)
         result["effectivePopSize"] = effective_pop
         result["effectiveGenerations"] = effective_gens
     elif method == "exact":
-        result = solve_exact(vertex_data, edge_data, capacity_k, max_n=18)
+        if exact_time_limit_ms is not None:
+            result = solve_exact_time_limited(
+                vertex_data,
+                edge_data,
+                capacity_k,
+                time_limit_ms=float(exact_time_limit_ms),
+                max_n=exact_max_n,
+            )
+        else:
+            result = solve_exact(vertex_data, edge_data, capacity_k, max_n=int(exact_max_n or 18))
     else:
         return None
 
@@ -313,13 +347,16 @@ class GraphAnalyzer:
         seed: int,
         fixed_capacity_k: Optional[int] = None,
         optimize_k: bool = False,
-        optimize_goal: str = "min-feasible-k",
+        optimize_goal: str = "best-weight",
         optimize_max_trials: int = 18,
         ratios: Optional[Sequence[float]] = None,
         small_scales: Optional[Sequence[int]] = None,
         medium_scales: Optional[Sequence[int]] = None,
         large_scales: Optional[Sequence[int]] = None,
         capacity_by_scale: Optional[Dict[str, Any]] = None,
+        exact_timebox_scales: Optional[Sequence[str]] = None,
+        exact_timebox_multiplier: float = 2.0,
+        exact_timebox_min_ms: float = 1.0,
     ) -> None:
         normalized = []
         seen = set()
@@ -330,17 +367,34 @@ class GraphAnalyzer:
             seen.add(method)
             normalized.append(method)
 
+        self.exact_requested = bool(include_exact) or ("exact" in seen)
         if include_exact and "exact" not in seen:
             normalized.append("exact")
-        self.methods = normalized or ["gccvc", "grccvc", "gwccvc", "hga"]
+        self.exact_timebox_scales = {
+            str(value).strip().lower()
+            for value in (exact_timebox_scales or [])
+            if str(value).strip().lower() in SCALE_KEYS
+        }
+        self.exact_timebox_multiplier = max(1.0, float(exact_timebox_multiplier))
+        self.exact_timebox_min_ms = max(1.0, float(exact_timebox_min_ms))
+        if self.exact_timebox_scales and "exact" not in normalized:
+            normalized.append("exact")
+        self.methods = normalized or [
+            "gccvc",
+            "grccvc",
+            "gwccvc",
+            "hga",
+            "hga_v2",
+            "weighted-and-cover-oriented-hga",
+        ]
         self.pop_size = int(pop_size)
         self.generations = int(generations)
         self.seed = int(seed)
         self.fixed_capacity_k = int(fixed_capacity_k) if fixed_capacity_k else None
         self.optimize_k = bool(optimize_k) and self.fixed_capacity_k is None
-        normalized_goal = str(optimize_goal or "min-feasible-k").strip().lower()
+        normalized_goal = str(optimize_goal or "best-weight").strip().lower()
         self.optimize_goal = (
-            normalized_goal if normalized_goal in SUPPORTED_OPTIMIZE_GOALS else "min-feasible-k"
+            normalized_goal if normalized_goal in SUPPORTED_OPTIMIZE_GOALS else "best-weight"
         )
         self.optimize_max_trials = max(4, min(int(optimize_max_trials), 100))
         self.ratios = sorted({float(value) for value in (ratios or []) if float(value) > 0.0})
@@ -385,9 +439,28 @@ class GraphAnalyzer:
         pop_size: int,
         generations: int,
         seed: int,
+        scale_bucket: Optional[str] = None,
     ) -> Dict[str, Any]:
         results: Dict[str, Any] = {}
-        for method in methods:
+        method_order: List[str] = []
+        seen = set()
+        for raw in methods:
+            method = str(raw).strip().lower()
+            if method in seen:
+                continue
+            seen.add(method)
+            method_order.append(method)
+
+        exact_timebox_enabled = (
+            scale_bucket is not None
+            and scale_bucket in self.exact_timebox_scales
+        )
+        if exact_timebox_enabled and "exact" not in seen:
+            method_order.append("exact")
+
+        for method in method_order:
+            if method == "exact":
+                continue
             results[method] = _run_method(
                 method=method,
                 vertex_data=vertex_data,
@@ -397,6 +470,47 @@ class GraphAnalyzer:
                 generations=generations,
                 seed=seed,
             )
+
+        run_exact = "exact" in method_order and (exact_timebox_enabled or self.exact_requested)
+        if run_exact:
+            exact_budget_ms: Optional[float] = None
+            exact_max_n: Optional[int] = 18
+            if exact_timebox_enabled:
+                longest_time_ms = 0.0
+                for method in method_order:
+                    if method == "exact":
+                        continue
+                    method_result = results.get(method)
+                    if not method_result:
+                        continue
+                    method_time = float(method_result.get("time", float("nan")))
+                    if math.isfinite(method_time):
+                        longest_time_ms = max(longest_time_ms, method_time)
+                exact_budget_ms = max(
+                    float(self.exact_timebox_min_ms),
+                    float(self.exact_timebox_multiplier) * float(longest_time_ms),
+                )
+                exact_max_n = None
+
+            exact_result = _run_method(
+                method="exact",
+                vertex_data=vertex_data,
+                edge_data=edge_data,
+                capacity_k=capacity_k,
+                pop_size=pop_size,
+                generations=generations,
+                seed=seed,
+                exact_time_limit_ms=exact_budget_ms,
+                exact_max_n=exact_max_n,
+            )
+            if exact_result is not None and exact_budget_ms is not None:
+                exact_result["timeBudgetMs"] = round(float(exact_budget_ms), 3)
+                exact_result["timeBudgetMultiplier"] = float(self.exact_timebox_multiplier)
+                exact_result["timeBudgetSource"] = "2x-longest-non-exact"
+                verification = exact_result.get("verification") or {}
+                if not bool(verification.get("isValid")):
+                    exact_result["status"] = "solution is not valid"
+            results["exact"] = exact_result
         return results
 
     def _optimize_capacity_for_graph(
@@ -409,13 +523,9 @@ class GraphAnalyzer:
         trial_results_by_k: Dict[int, Dict[str, Any]] = {}
         trial_by_k: Dict[int, Dict[str, Any]] = {}
 
-        trial_methods = [method for method in self.methods if method in {"gccvc", "grccvc", "gwccvc"}]
-        if not trial_methods:
-            trial_methods = [method for method in self.methods if method in {"hga", "exact"}]
-        if "hga" in self.methods and "hga" not in trial_methods:
-            trial_methods.append("hga")
-        if not trial_methods and self.methods:
-            trial_methods = [self.methods[0]]
+        # Anchor k-optimization to GRCCVC for stable baseline comparison.
+        trial_methods = ["grccvc"]
+        trial_selector_method = "grccvc"
 
         trial_pop = min(self.pop_size, 22)
         trial_generations = min(self.generations, 28)
@@ -435,17 +545,24 @@ class GraphAnalyzer:
                 vertex_data=vertex_data,
                 edge_data=edge_data,
                 capacity_k=k,
-                pop_size=trial_hga_budget[0] if "hga" in trial_methods else trial_pop,
-                generations=trial_hga_budget[1] if "hga" in trial_methods else trial_generations,
+                pop_size=trial_pop,
+                generations=trial_generations,
                 seed=self.seed,
             )
             trial_results_by_k[k] = run_results
-            best_valid = _best_valid_method_for_results(run_results)
+            selector_result = run_results.get(trial_selector_method) or {}
+            verification = selector_result.get("verification") or {}
+            is_valid = bool(verification.get("isValid"))
+            selector_weight = (
+                round(float(verification.get("totalWeight", float("inf"))), 6)
+                if is_valid
+                else None
+            )
             trial_by_k[k] = {
                 "k": k,
-                "feasible": bool(best_valid),
-                "bestMethod": best_valid["method"] if best_valid else None,
-                "bestWeight": round(float(best_valid["weight"]), 6) if best_valid else None,
+                "feasible": is_valid,
+                "bestMethod": trial_selector_method if is_valid else None,
+                "bestWeight": selector_weight,
             }
 
         min_k = int(bounds["minK"])
@@ -502,12 +619,16 @@ class GraphAnalyzer:
             "minFeasibleK": min_feasible_k,
             "trialCount": len(trial_list),
             "trialMethods": trial_methods,
+            "trialSelector": trial_selector_method,
             "trialBudget": int(self.optimize_max_trials),
             "trialHgaBudget": {
                 "popSize": int(trial_hga_budget[0]),
                 "generations": int(trial_hga_budget[1]),
             }
-            if "hga" in trial_methods
+            if any(
+                method in trial_methods
+                for method in {"hga", "hga_v2", "weighted-and-cover-oriented-hga"}
+            )
             else None,
             "trials": trial_list,
         }
@@ -543,6 +664,7 @@ class GraphAnalyzer:
             pop_size=self.pop_size,
             generations=self.generations,
             seed=self.seed,
+            scale_bucket=scale_bucket,
         )
 
         best_valid_method: Optional[str] = None

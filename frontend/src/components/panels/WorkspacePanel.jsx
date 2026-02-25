@@ -284,7 +284,7 @@ export default function WorkspacePanel({
 
       {workspaceTab === "convergence" && (
         <div className="animate-fade-in flex flex-col gap-4">
-          <Card title="HGA Convergence" className="min-h-[300px]">
+          <Card title="Metaheuristic Convergence" className="min-h-[300px]">
             {convergenceData.length ? (
               <ResponsiveContainer width="100%" height={300}>
                 <LineChart data={convergenceData} margin={{ top: 10, right: 16, left: -10, bottom: 8 }}>
@@ -302,7 +302,9 @@ export default function WorkspacePanel({
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <p className="mt-2 text-sm text-[var(--text-muted)]">Run HGA to populate convergence chart.</p>
+              <p className="mt-2 text-sm text-[var(--text-muted)]">
+                Run HGA-family methods to populate convergence chart.
+              </p>
             )}
           </Card>
 
@@ -352,7 +354,9 @@ export default function WorkspacePanel({
                     </LineChart>
                   </ResponsiveContainer>
                 ) : (
-                  <p className="p-4 text-sm text-[var(--text-muted)]">Run HGA first.</p>
+                  <p className="p-4 text-sm text-[var(--text-muted)]">
+                    Run HGA-family methods first.
+                  </p>
                 )}
               </div>
             </div>

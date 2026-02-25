@@ -51,6 +51,10 @@ textarea {
   --danger: #ff6961;
 
   --method-hga: #64d2ff;
+  --method-hga-v2: #8de36f;
+  --method-weighted-cover-hga: #ff7db7;
+  --method-hga-v3: #ff7db7;
+  --method-nsga-v2: #66d4c0;
   --method-gccvc: #34c759;
   --method-grccvc: #af8cff;
   --method-gwccvc: #ff9f3e;
@@ -101,6 +105,10 @@ textarea {
   --danger: #d63737;
 
   --method-hga: #0b84ff;
+  --method-hga-v2: #2ca54d;
+  --method-weighted-cover-hga: #d81b78;
+  --method-hga-v3: #d81b78;
+  --method-nsga-v2: #0f9e8a;
   --method-gccvc: #18b05f;
   --method-grccvc: #8b5cf6;
   --method-gwccvc: #f27f20;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import random
 import threading
@@ -25,10 +26,20 @@ from .algorithms import (
     solve_grccvc,
     solve_gwccvc,
     solve_hga,
+    solve_hga_v2,
+    solve_weighted_and_cover_oriented_hga,
     verify_solution,
 )
 
-SUPPORTED_METHODS = {"gccvc", "grccvc", "gwccvc", "hga", "exact"}
+SUPPORTED_METHODS = {
+    "gccvc",
+    "grccvc",
+    "gwccvc",
+    "hga",
+    "hga_v2",
+    "weighted-and-cover-oriented-hga",
+    "exact",
+}
 SUPPORTED_OPTIMIZE_GOALS = {"min-feasible-k", "best-weight"}
 DEFAULT_DAGDEVIREN_DATASET_DIR = Path(__file__).resolve().parents[1] / "data" / "DagdevirenDataset"
 DAGDEVIREN_DEFAULT_RATIOS = [2.0, 4.0, 6.0, 8.0]
@@ -43,6 +54,10 @@ PRESET_TEST_JOB_MAX_RECORDS = 128
 _PRESET_TEST_JOBS: Dict[str, Dict[str, Any]] = {}
 _PRESET_TEST_JOBS_LOCK = threading.Lock()
 
+LOG_DIR = Path(__file__).resolve().parents[1] / "data"
+SOLVE_LOG_PATH = LOG_DIR / "solve_runs.jsonl"
+TEST_RESULTS_DIR = LOG_DIR / "test_results"
+
 
 class VertexIn(BaseModel):
     id: int
@@ -56,7 +71,7 @@ class SolveRequest(BaseModel):
     edges: List[Tuple[int, int]]
     capacityK: Optional[int] = Field(default=None, ge=1)
     optimizeK: bool = False
-    optimizeGoal: str = "min-feasible-k"
+    optimizeGoal: str = "best-weight"
     optimizeMaxTrials: int = Field(default=18, ge=4, le=100)
     popSize: int = Field(default=40, ge=2, le=300)
     generations: int = Field(default=60, ge=1, le=1000)
@@ -102,7 +117,7 @@ class DagdevirenAnalysisRequest(BaseModel):
     includeExact: bool = False
     capacityK: Optional[int] = Field(default=None, ge=1)
     optimizeK: bool = False
-    optimizeGoal: str = "min-feasible-k"
+    optimizeGoal: str = "best-weight"
     optimizeMaxTrials: int = Field(default=18, ge=4, le=100)
     ratios: Optional[List[float]] = Field(default_factory=lambda: list(DAGDEVIREN_DEFAULT_RATIOS))
     smallScales: List[int] = Field(default_factory=lambda: list(DAGDEVIREN_DEFAULT_SMALL_SCALES))
@@ -198,7 +213,7 @@ class DagdevirenPresetScaleTestRequest(BaseModel):
     includeExact: bool = False
     capacityK: Optional[int] = Field(default=None, ge=1)
     optimizeK: bool = False
-    optimizeGoal: str = "min-feasible-k"
+    optimizeGoal: str = "best-weight"
     optimizeMaxTrials: int = Field(default=18, ge=4, le=100)
     ratios: Optional[List[float]] = Field(default_factory=lambda: list(DAGDEVIREN_DEFAULT_RATIOS))
     capacityByScale: Dict[str, int] = Field(
@@ -391,6 +406,99 @@ def best_valid_method_for_k(results: Dict[str, Any]) -> Optional[Dict[str, Any]]
     }
 
 
+def _log_jsonl(path: Path, payload: Dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            json.dump(payload, f, separators=(",", ":"))
+            f.write("\n")
+    except Exception:
+        # Logging must never break API responses.
+        pass
+
+
+def _safe_slug(value: Any, max_len: int = 80) -> str:
+    text = str(value).strip().lower()
+    if not text:
+        return "item"
+    chars: List[str] = []
+    for ch in text:
+        if ch.isalnum() or ch in {"-", "_"}:
+            chars.append(ch)
+        else:
+            chars.append("_")
+    slug = "".join(chars).strip("_")
+    if not slug:
+        slug = "item"
+    return slug[:max_len]
+
+
+def _write_json_snapshot(
+    base_dir: Path,
+    *,
+    category: str,
+    payload: Dict[str, Any],
+    token: Optional[str] = None,
+) -> Optional[str]:
+    try:
+        folder = base_dir / _safe_slug(category)
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+        name = stamp
+        if token:
+            name = f"{name}_{_safe_slug(token)}"
+        file_path = folder / f"{name}.json"
+        with file_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+        return str(file_path)
+    except Exception:
+        # Snapshot persistence must never break API responses.
+        return None
+
+
+def _persist_test_snapshot(
+    *,
+    category: str,
+    request_payload: Dict[str, Any],
+    response_payload: Dict[str, Any],
+    token: Optional[str] = None,
+) -> Optional[str]:
+    snapshot = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "category": category,
+        "request": request_payload,
+        "response": response_payload,
+    }
+    return _write_json_snapshot(
+        TEST_RESULTS_DIR,
+        category=category,
+        payload=snapshot,
+        token=token,
+    )
+
+
+def _summarize_results(results: Dict[str, Any]) -> List[Dict[str, Any]]:
+    summary: List[Dict[str, Any]] = []
+    for method, result in results.items():
+        if result is None:
+            summary.append({"method": method, "status": "null"})
+            continue
+        verification = result.get("verification") or {}
+        summary.append(
+            {
+                "method": method,
+                "isValid": bool(verification.get("isValid")),
+                "weight": verification.get("totalWeight"),
+                "coverSize": verification.get("coverSize"),
+                "timeMs": result.get("time"),
+                "paretoSize": len(result.get("paretoFront", []))
+                if isinstance(result.get("paretoFront"), list)
+                else None,
+            }
+        )
+    return summary
+
+
 def pick_scan_points(min_k: int, max_k: int, budget: int) -> List[int]:
     if budget <= 0 or max_k < min_k:
         return []
@@ -486,7 +594,7 @@ def run_methods_for_k(
             result = solve_grccvc(vertex_data, normalized_edges, capacity_k, seed)
         elif method == "gwccvc":
             result = solve_gwccvc(vertex_data, normalized_edges, capacity_k, seed)
-        elif method == "hga":
+        elif method in {"hga", "hga_v2", "weighted-and-cover-oriented-hga"}:
             if hga_budget_override is None:
                 effective_pop, effective_gens = adaptive_hga_budget(
                     n_vertices,
@@ -496,14 +604,33 @@ def run_methods_for_k(
             else:
                 effective_pop = max(2, int(hga_budget_override[0]))
                 effective_gens = max(1, int(hga_budget_override[1]))
-            result = solve_hga(
-                vertex_data,
-                normalized_edges,
-                capacity_k,
-                effective_pop,
-                effective_gens,
-                seed,
-            )
+            if method == "hga_v2":
+                result = solve_hga_v2(
+                    vertex_data,
+                    normalized_edges,
+                    capacity_k,
+                    effective_pop,
+                    effective_gens,
+                    seed,
+                )
+            elif method == "weighted-and-cover-oriented-hga":
+                result = solve_weighted_and_cover_oriented_hga(
+                    vertex_data,
+                    normalized_edges,
+                    capacity_k,
+                    effective_pop,
+                    effective_gens,
+                    seed,
+                )
+            else:
+                result = solve_hga(
+                    vertex_data,
+                    normalized_edges,
+                    capacity_k,
+                    effective_pop,
+                    effective_gens,
+                    seed,
+                )
             result["effectivePopSize"] = effective_pop
             result["effectiveGenerations"] = effective_gens
         elif method == "exact":
@@ -566,7 +693,14 @@ def solve(payload: SolveRequest) -> Dict[str, Any]:
     if payload.methods is not None:
         methods_to_run = list(payload.methods)
     else:
-        methods_to_run = ["gccvc", "grccvc", "gwccvc", "hga"]
+        methods_to_run = [
+            "gccvc",
+            "grccvc",
+            "gwccvc",
+            "hga",
+            "hga_v2",
+            "weighted-and-cover-oriented-hga",
+        ]
         if payload.includeExact:
             methods_to_run.append("exact")
 
@@ -582,14 +716,13 @@ def solve(payload: SolveRequest) -> Dict[str, Any]:
     trial_results_by_k: Dict[int, Dict[str, Any]] = {}
     full_results_by_k: Dict[int, Dict[str, Any]] = {}
 
-    trial_methods = [method for method in methods_to_run if method in {"gccvc", "grccvc", "gwccvc"}]
-    if not trial_methods and methods_to_run:
-        trial_methods = [methods_to_run[0]]
+    # Capacity-k optimization is anchored to GRCCVC so selected k is directly comparable
+    # against the same baseline in manual runs.
+    trial_methods = ["grccvc"]
+    trial_selector_method = "grccvc"
 
     trial_pop = min(payload.popSize, 22)
     trial_generations = min(payload.generations, 28)
-    if "hga" in methods_to_run and "hga" not in trial_methods:
-        trial_methods.append("hga")
     trial_hga_budget = adaptive_trial_hga_budget(
         len(vertex_data),
         trial_pop,
@@ -609,16 +742,23 @@ def solve(payload: SolveRequest) -> Dict[str, Any]:
             pop_size=trial_pop,
             generations=trial_generations,
             seed=payload.seed,
-            hga_budget_override=trial_hga_budget if "hga" in trial_methods else None,
+            hga_budget_override=None,
         )
         trial_results_by_k[k] = run_results
 
-        best_valid = best_valid_method_for_k(run_results)
+        selector_result = run_results.get(trial_selector_method) or {}
+        verification = selector_result.get("verification") or {}
+        is_valid = bool(verification.get("isValid"))
+        selector_weight = (
+            round(float(verification.get("totalWeight", float("inf"))), 3)
+            if is_valid
+            else None
+        )
         trial_by_k[k] = {
             "k": k,
-            "feasible": bool(best_valid),
-            "bestMethod": best_valid["method"] if best_valid else None,
-            "bestWeight": best_valid["weight"] if best_valid else None,
+            "feasible": is_valid,
+            "bestMethod": trial_selector_method if is_valid else None,
+            "bestWeight": selector_weight,
         }
         return run_results
 
@@ -712,16 +852,36 @@ def solve(payload: SolveRequest) -> Dict[str, Any]:
                 "bestTrialK": int(best_trial["k"]) if best_trial else None,
                 "trialCount": len(trial_list),
                 "trialMethods": trial_methods,
+                "trialSelector": trial_selector_method,
                 "trialBudget": int(payload.optimizeMaxTrials),
                 "trialHgaBudget": {
                     "popSize": int(trial_hga_budget[0]),
                     "generations": int(trial_hga_budget[1]),
                 }
-                if "hga" in trial_methods
+                if any(
+                    method in trial_methods
+                    for method in {"hga", "hga_v2", "weighted-and-cover-oriented-hga"}
+                )
                 else None,
                 "trials": trial_list,
             }
         )
+
+    log_payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "request": payload.model_dump(),
+        "meta": {
+            "vertexCount": len(vertex_data),
+            "edgeCount": len(normalized_edges),
+            "capacityK": selected_k,
+            "methodsRun": methods_to_run,
+            "kBounds": k_bounds,
+            "optimization": optimization_meta,
+        },
+        "resultsSummary": _summarize_results(final_results),
+        "results": final_results,
+    }
+    _log_jsonl(SOLVE_LOG_PATH, log_payload)
 
     return {
         "results": final_results,
@@ -1071,7 +1231,14 @@ def _prune_preset_test_jobs_locked(now_ts: float) -> None:
 
 def _run_dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> Dict[str, Any]:
     dataset_dir = resolve_dataset_dir(payload.datasetDir)
-    methods = payload.methods or ["gccvc", "grccvc", "gwccvc", "hga"]
+    methods = payload.methods or [
+        "gccvc",
+        "grccvc",
+        "gwccvc",
+        "hga",
+        "hga_v2",
+        "weighted-and-cover-oriented-hga",
+    ]
     ratios = payload.ratios or list(DAGDEVIREN_DEFAULT_RATIOS)
     ratio_set = _normalized_ratio_set(ratios)
     capacity_by_scale = payload.capacityByScale or dict(DAGDEVIREN_DEFAULT_CAPACITY_BY_SCALE)
@@ -1152,6 +1319,9 @@ def _run_dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> D
         medium_scales=DAGDEVIREN_DEFAULT_MEDIUM_SCALES,
         large_scales=DAGDEVIREN_DEFAULT_LARGE_SCALES,
         capacity_by_scale=capacity_by_scale,
+        exact_timebox_scales=["small", "medium"],
+        exact_timebox_multiplier=2.0,
+        exact_timebox_min_ms=1.0,
     )
     graph_analysis = graph_analyzer.analyze_dataset(
         dataset_dir=dataset_dir,
@@ -1242,6 +1412,13 @@ def _run_dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> D
             "capacityByScale": capacity_by_scale,
             "maxFilesPerScale": payload.maxFilesPerScale,
             "selectionMode": "grouped-by-n-m-include-all-s",
+            "presetExactPolicy": {
+                "enabledForScales": ["small", "medium"],
+                "runOrder": "non-exact-first-then-exact",
+                "timeBudgetMultiplier": 2.0,
+                "timeBudgetReference": "longest-non-exact-time",
+                "onInvalid": "solution is not valid",
+            },
             "syntheticEnabled": payload.fillMissingWithSynthetic,
             "syntheticTargetPerScale": synthetic_target_per_scale,
             "syntheticGeneratedCount": synthetic_generated_count,
@@ -1296,7 +1473,28 @@ def _preset_test_job_worker(job_id: str, payload_data: Dict[str, Any]) -> None:
     try:
         payload = DagdevirenPresetScaleTestRequest.model_validate(payload_data)
         result = _run_dagdeviren_preset_tests(payload)
+        result_file = _persist_test_snapshot(
+            category="dagdeviren_preset_tests_job",
+            request_payload=payload_data,
+            response_payload=result,
+            token=job_id,
+        )
+        if result_file:
+            result_meta = result.get("meta")
+            if isinstance(result_meta, dict):
+                result_meta["savedResultPath"] = result_file
+            else:
+                result["meta"] = {"savedResultPath": result_file}
     except Exception as exc:
+        result_file = _persist_test_snapshot(
+            category="dagdeviren_preset_tests_job_failed",
+            request_payload=payload_data,
+            response_payload={
+                "jobId": job_id,
+                "error": str(exc),
+            },
+            token=job_id,
+        )
         completed_at_ts = time.time()
         with _PRESET_TEST_JOBS_LOCK:
             job = _PRESET_TEST_JOBS.get(job_id)
@@ -1307,6 +1505,7 @@ def _preset_test_job_worker(job_id: str, payload_data: Dict[str, Any]) -> None:
             job["completedAt"] = _utc_now_iso()
             job["completedAtTs"] = completed_at_ts
             job["result"] = None
+            job["resultFile"] = result_file
         return
 
     completed_at_ts = time.time()
@@ -1319,11 +1518,24 @@ def _preset_test_job_worker(job_id: str, payload_data: Dict[str, Any]) -> None:
         job["completedAt"] = _utc_now_iso()
         job["completedAtTs"] = completed_at_ts
         job["result"] = result
+        job["resultFile"] = result.get("meta", {}).get("savedResultPath")
 
 
 @app.post("/api/analysis/dagdeviren/preset-tests")
 def dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> Dict[str, Any]:
-    return _run_dagdeviren_preset_tests(payload)
+    result = _run_dagdeviren_preset_tests(payload)
+    result_file = _persist_test_snapshot(
+        category="dagdeviren_preset_tests",
+        request_payload=payload.model_dump(),
+        response_payload=result,
+    )
+    if result_file:
+        result_meta = result.get("meta")
+        if isinstance(result_meta, dict):
+            result_meta["savedResultPath"] = result_file
+        else:
+            result["meta"] = {"savedResultPath": result_file}
+    return result
 
 
 @app.post("/api/analysis/dagdeviren/preset-tests/start")
@@ -1344,6 +1556,7 @@ def dagdeviren_preset_tests_start(payload: DagdevirenPresetScaleTestRequest) -> 
             "completedAtTs": None,
             "error": None,
             "result": None,
+            "resultFile": None,
         }
 
     worker = threading.Thread(
@@ -1373,6 +1586,7 @@ def dagdeviren_preset_tests_job_status(job_id: str) -> Dict[str, Any]:
             "startedAt": job.get("startedAt"),
             "completedAt": job.get("completedAt"),
             "error": job.get("error"),
+            "resultFile": job.get("resultFile"),
         }
         if job.get("status") == "completed":
             payload["result"] = job.get("result")
@@ -1382,7 +1596,14 @@ def dagdeviren_preset_tests_job_status(job_id: str) -> Dict[str, Any]:
 @app.post("/api/analysis/dagdeviren/run")
 def dagdeviren_run(payload: DagdevirenAnalysisRequest) -> Dict[str, Any]:
     dataset_dir = resolve_dataset_dir(payload.datasetDir)
-    methods = payload.methods or ["gccvc", "grccvc", "gwccvc", "hga"]
+    methods = payload.methods or [
+        "gccvc",
+        "grccvc",
+        "gwccvc",
+        "hga",
+        "hga_v2",
+        "weighted-and-cover-oriented-hga",
+    ]
     ratios = payload.ratios or list(DAGDEVIREN_DEFAULT_RATIOS)
     small_scales = payload.smallScales or list(DAGDEVIREN_DEFAULT_SMALL_SCALES)
     medium_scales = payload.mediumScales or list(DAGDEVIREN_DEFAULT_MEDIUM_SCALES)
@@ -1416,7 +1637,7 @@ def dagdeviren_run(payload: DagdevirenAnalysisRequest) -> Dict[str, Any]:
     connectivity_visualization = ConnectivityRatioVisualizer().build(graph_analysis["graphs"])
     scale_visualization = ScaleVisualizer().build(scale_analysis)
 
-    return {
+    response_payload = {
         "meta": {
             "datasetDir": str(dataset_dir),
             "methods": graph_analysis["methods"],
@@ -1439,3 +1660,11 @@ def dagdeviren_run(payload: DagdevirenAnalysisRequest) -> Dict[str, Any]:
         "connectivityRatioVisualization": connectivity_visualization,
         "scaleVisualization": scale_visualization,
     }
+    result_file = _persist_test_snapshot(
+        category="dagdeviren_run",
+        request_payload=payload.model_dump(),
+        response_payload=response_payload,
+    )
+    if result_file:
+        response_payload["meta"]["savedResultPath"] = result_file
+    return response_payload

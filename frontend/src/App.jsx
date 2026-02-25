@@ -39,6 +39,32 @@ const DAGDEVIREN_SCALE_GROUPS = {
 const DAGDEVIREN_CAPACITY_BY_SCALE = { small: 18, medium: 16, large: 16 };
 const PRESET_SCALE_RUN_SCOPES = ["all", "small", "medium", "large"];
 const PRESET_TEST_POLL_INTERVAL_MS = 1500;
+const METHOD_FALLBACK_COLORS = [
+  "#f97316",
+  "#0ea5e9",
+  "#10b981",
+  "#f43f5e",
+  "#8b5cf6",
+  "#eab308",
+];
+
+function humanizeMethodKey(methodKey) {
+  return String(methodKey || "")
+    .trim()
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(" ");
+}
+
+function colorForMethodKey(methodKey) {
+  const text = String(methodKey || "");
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  }
+  return METHOD_FALLBACK_COLORS[hash % METHOD_FALLBACK_COLORS.length];
+}
 
 export default function App() {
   const [graph, setGraph] = useState(null);
@@ -58,7 +84,7 @@ export default function App() {
 
   const [kMode, setKMode] = useState("manual");
   const [capKInput, setCapKInput] = useState("9");
-  const [optimizeGoal, setOptimizeGoal] = useState("min-feasible-k");
+  const [optimizeGoal, setOptimizeGoal] = useState("best-weight");
   const [optimizeTrials, setOptimizeTrials] = useState(14);
 
   const [popSize, setPopSize] = useState(40);
@@ -301,7 +327,12 @@ export default function App() {
       setHoverNode(null);
 
       const first = METHODS.find((method) => nextResults[method.key]);
-      if (first) setSelectedMethod(first.key);
+      if (first) {
+        setSelectedMethod(first.key);
+      } else {
+        const dynamicFirst = Object.keys(nextResults)[0];
+        if (dynamicFirst) setSelectedMethod(dynamicFirst);
+      }
     } catch (error) {
       setRunErr(error instanceof Error ? error.message : "Failed to run algorithms.");
     } finally {
@@ -319,7 +350,15 @@ export default function App() {
     try {
       const densities = [0.1, 0.16, 0.22, 0.28, 0.34];
       const rows = [];
-      const benchmarkMethods = ["gccvc", "grccvc", "gwccvc", "hga", "exact"];
+      const benchmarkMethods = [
+        "gccvc",
+        "grccvc",
+        "gwccvc",
+        "hga",
+        "hga_v2",
+        "weighted-and-cover-oriented-hga",
+        "exact",
+      ];
 
       for (let i = 0; i < densities.length; i++) {
         const density = densities[i];
@@ -377,7 +416,14 @@ export default function App() {
         mediumScales: DAGDEVIREN_SCALE_GROUPS.medium,
         largeScales: DAGDEVIREN_SCALE_GROUPS.large,
         capacityByScale: DAGDEVIREN_CAPACITY_BY_SCALE,
-        methods: ["gccvc", "grccvc", "gwccvc", "hga"],
+        methods: [
+          "gccvc",
+          "grccvc",
+          "gwccvc",
+          "hga",
+          "hga_v2",
+          "weighted-and-cover-oriented-hga",
+        ],
         includeExact: false,
         capacityK: kMode === "manual" ? manualK || undefined : undefined,
         popSize,
@@ -422,7 +468,14 @@ export default function App() {
         optimizeK: kMode === "auto",
         optimizeGoal,
         optimizeMaxTrials: optimizeTrials,
-        methods: ["gccvc", "grccvc", "gwccvc", "hga"],
+        methods: [
+          "gccvc",
+          "grccvc",
+          "gwccvc",
+          "hga",
+          "hga_v2",
+          "weighted-and-cover-oriented-hga",
+        ],
         includeExact: false,
         capacityK: kMode === "manual" ? manualK || undefined : undefined,
         popSize,
@@ -492,11 +545,27 @@ export default function App() {
   const methodRows = useMemo(() => {
     if (!results) return [];
 
-    const base = METHODS.map((method) => {
-      const payload = results[method.key];
+    const knownByKey = new Map(METHODS.map((method) => [method.key, method]));
+    const knownKeys = METHODS.map((method) => method.key).filter((key) =>
+      Object.prototype.hasOwnProperty.call(results, key)
+    );
+    const unknownKeys = Object.keys(results)
+      .filter((key) => !knownByKey.has(key))
+      .sort();
+    const methodKeys = [...knownKeys, ...unknownKeys];
+
+    const base = methodKeys.map((methodKey) => {
+      const payload = results[methodKey];
       if (!payload) return null;
 
       const verification = payload.verification || {};
+      const method =
+        knownByKey.get(methodKey) || {
+          key: methodKey,
+          label: humanizeMethodKey(methodKey),
+          color: colorForMethodKey(methodKey),
+          mark: "◌",
+        };
       return {
         ...method,
         result: payload,
@@ -600,18 +669,33 @@ export default function App() {
   );
 
   const convergenceData = useMemo(() => {
-    const history = Array.isArray(results?.hga?.history) ? results.hga.history : [];
+    const fallbackKeys = ["weighted-and-cover-oriented-hga", "hga_v2", "hga"];
+    let history = [];
+    if (Array.isArray(results?.[selectedMethod]?.history)) {
+      history = results[selectedMethod].history;
+    } else {
+      for (const key of fallbackKeys) {
+        if (Array.isArray(results?.[key]?.history)) {
+          history = results[key].history;
+          break;
+        }
+      }
+    }
     return history
       .map((row) => ({
         gen: Number(row?.gen),
         bestWeight: Number(row?.bestWeight),
       }))
       .filter((row) => Number.isFinite(row.gen) && Number.isFinite(row.bestWeight));
-  }, [results]);
+  }, [results, selectedMethod]);
 
   const greedyBest = useMemo(() => {
     const other = methodRows
-      .filter((row) => row.key !== "hga" && Number.isFinite(row.totalWeight))
+      .filter(
+        (row) =>
+          !["hga", "hga_v2", "weighted-and-cover-oriented-hga"].includes(row.key)
+          && Number.isFinite(row.totalWeight)
+      )
       .map((row) => row.totalWeight);
     if (!other.length) return null;
     return Math.min(...other);
@@ -622,9 +706,9 @@ export default function App() {
 
     return benchmarkRows.map((row) => {
       const item = { instance: row.id, density: Number(row.density.toFixed(2)) };
-      METHODS.forEach((method) => {
-        const w = Number(row.results?.[method.key]?.verification?.totalWeight);
-        if (Number.isFinite(w)) item[method.key] = w;
+      Object.keys(row.results || {}).forEach((methodKey) => {
+        const w = Number(row.results?.[methodKey]?.verification?.totalWeight);
+        if (Number.isFinite(w)) item[methodKey] = w;
       });
       return item;
     });
@@ -633,7 +717,19 @@ export default function App() {
   const benchmarkMethods = useMemo(() => {
     if (!benchmarkSeries.length) return [];
     const sample = benchmarkSeries[0];
-    return METHODS.filter((method) => Object.prototype.hasOwnProperty.call(sample, method.key));
+    const seriesKeys = Object.keys(sample).filter((key) => !["instance", "density"].includes(key));
+    const known = METHODS.filter((method) => seriesKeys.includes(method.key));
+    const knownSet = new Set(known.map((method) => method.key));
+    const unknown = seriesKeys
+      .filter((key) => !knownSet.has(key))
+      .sort()
+      .map((key) => ({
+        key,
+        label: humanizeMethodKey(key),
+        color: colorForMethodKey(key),
+        mark: "◌",
+      }));
+    return [...known, ...unknown];
   }, [benchmarkSeries]);
 
   const activeK = solveMeta?.capacityK ?? (kMode === "manual" ? manualK ?? "-" : "-");

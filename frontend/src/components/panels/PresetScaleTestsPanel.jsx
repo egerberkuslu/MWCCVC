@@ -174,7 +174,7 @@ export default function PresetScaleTestsPanel({
   const syntheticCount = Number(meta.syntheticGeneratedCount || 0);
   const syntheticEnabled = Boolean(meta.syntheticEnabled);
   const optimizeEnabled = Boolean(meta.optimizeK);
-  const optimizeGoal = meta.optimizeGoal || "min-feasible-k";
+  const optimizeGoal = meta.optimizeGoal || "best-weight";
   const rawPresetJson = useMemo(
     () => JSON.stringify(presetScaleTests, null, 2),
     [presetScaleTests]
