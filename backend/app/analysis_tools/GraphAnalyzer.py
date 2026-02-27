@@ -272,7 +272,10 @@ def _run_method(
                 max_n=exact_max_n,
             )
         else:
-            result = solve_exact(vertex_data, edge_data, capacity_k, max_n=int(exact_max_n or 18))
+            if exact_max_n is None:
+                result = solve_exact(vertex_data, edge_data, capacity_k, max_n=None)
+            else:
+                result = solve_exact(vertex_data, edge_data, capacity_k, max_n=int(exact_max_n))
     else:
         return None
 
@@ -357,6 +360,8 @@ class GraphAnalyzer:
         exact_timebox_scales: Optional[Sequence[str]] = None,
         exact_timebox_multiplier: float = 2.0,
         exact_timebox_min_ms: float = 1.0,
+        exact_forced_scales: Optional[Sequence[str]] = None,
+        exact_unbounded_scales: Optional[Sequence[str]] = None,
     ) -> None:
         normalized = []
         seen = set()
@@ -375,9 +380,19 @@ class GraphAnalyzer:
             for value in (exact_timebox_scales or [])
             if str(value).strip().lower() in SCALE_KEYS
         }
+        self.exact_forced_scales = {
+            str(value).strip().lower()
+            for value in (exact_forced_scales or [])
+            if str(value).strip().lower() in SCALE_KEYS
+        }
+        self.exact_unbounded_scales = {
+            str(value).strip().lower()
+            for value in (exact_unbounded_scales or [])
+            if str(value).strip().lower() in SCALE_KEYS
+        }
         self.exact_timebox_multiplier = max(1.0, float(exact_timebox_multiplier))
         self.exact_timebox_min_ms = max(1.0, float(exact_timebox_min_ms))
-        if self.exact_timebox_scales and "exact" not in normalized:
+        if (self.exact_timebox_scales or self.exact_forced_scales) and "exact" not in normalized:
             normalized.append("exact")
         self.methods = normalized or [
             "gccvc",
@@ -455,7 +470,11 @@ class GraphAnalyzer:
             scale_bucket is not None
             and scale_bucket in self.exact_timebox_scales
         )
-        if exact_timebox_enabled and "exact" not in seen:
+        exact_forced_enabled = (
+            scale_bucket is not None
+            and scale_bucket in self.exact_forced_scales
+        )
+        if (exact_timebox_enabled or exact_forced_enabled) and "exact" not in seen:
             method_order.append("exact")
 
         for method in method_order:
@@ -471,7 +490,9 @@ class GraphAnalyzer:
                 seed=seed,
             )
 
-        run_exact = "exact" in method_order and (exact_timebox_enabled or self.exact_requested)
+        run_exact = "exact" in method_order and (
+            exact_timebox_enabled or exact_forced_enabled or self.exact_requested
+        )
         if run_exact:
             exact_budget_ms: Optional[float] = None
             exact_max_n: Optional[int] = 18
@@ -490,6 +511,11 @@ class GraphAnalyzer:
                     float(self.exact_timebox_min_ms),
                     float(self.exact_timebox_multiplier) * float(longest_time_ms),
                 )
+                exact_max_n = None
+            elif (
+                scale_bucket is not None
+                and scale_bucket in self.exact_unbounded_scales
+            ):
                 exact_max_n = None
 
             exact_result = _run_method(

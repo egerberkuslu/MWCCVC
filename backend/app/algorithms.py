@@ -4461,20 +4461,7 @@ def _solve_exact_branch_and_bound(
 ) -> Optional[Dict[str, Any]]:
     n_vertices = len(vertex_data)
     if max_n is not None and n_vertices > int(max_n):
-        if time_limit_ms is None:
-            return None
-        normalized_edges = [(int(u), int(v)) for u, v in edge_data]
-        t0 = time.perf_counter()
-        upper_bound = solve_gccvc(vertex_data, normalized_edges, capacity_k)
-        return {
-            "cover": set(int(node_id) for node_id in upper_bound.get("cover", [])),
-            "time_ms": (time.perf_counter() - t0) * 1000.0,
-            "name": "Exact (B&B)",
-            "explored": 0,
-            "timedOut": False,
-            "timeLimitMs": max(0.0, float(time_limit_ms)),
-            "stoppedReason": "max_n_guard",
-        }
+        return None
 
     t0 = time.perf_counter()
     normalized_edges = [(int(u), int(v)) for u, v in edge_data]
@@ -4516,6 +4503,15 @@ def _solve_exact_branch_and_bound(
                     stack.append(w)
         return len(visited) == len(cover_set)
 
+    def is_exact_feasible(cover_set: Set[int]) -> bool:
+        if len(cover_set) * capacity_k < edge_count:
+            return False
+        if not is_vc(cover_set):
+            return False
+        if not is_conn(cover_set):
+            return False
+        return _check_capacity_feasibility_raw(normalized_edges, cover_set, capacity_k)
+
     min_cover_size = (edge_count + max(1, int(capacity_k)) - 1) // max(1, int(capacity_k))
     ordered_ids = sorted(
         ids,
@@ -4526,11 +4522,20 @@ def _solve_exact_branch_and_bound(
         reverse=True,
     )
 
-    upper_bound = solve_gccvc(vertex_data, normalized_edges, capacity_k)
-    best_sol = set(int(node_id) for node_id in upper_bound.get("cover", []))
-    if not best_sol:
-        best_sol = set(ids)
-    best_w = sum(w_map.get(node_id, 0.0) for node_id in best_sol) + 1e-9
+    best_sol: Set[int] = set()
+    best_w = float("inf")
+    for starter in (solve_gccvc, solve_grccvc, solve_gwccvc):
+        try:
+            seed_result = starter(vertex_data, normalized_edges, capacity_k)
+        except Exception:
+            continue
+        candidate = {int(node_id) for node_id in seed_result.get("cover", [])}
+        if not is_exact_feasible(candidate):
+            continue
+        candidate_weight = sum(w_map.get(node_id, 0.0) for node_id in candidate)
+        if candidate_weight + 1e-9 < best_w:
+            best_w = candidate_weight
+            best_sol = candidate
     explored = 0
     timed_out = False
     deadline: Optional[float] = None
@@ -4555,11 +4560,7 @@ def _solve_exact_branch_and_bound(
             return
         if idx == n:
             candidate = set(current)
-            if (
-                is_vc(candidate)
-                and is_conn(candidate)
-                and len(candidate) * capacity_k >= edge_count
-            ):
+            if is_exact_feasible(candidate):
                 best_w = weight
                 best_sol = candidate
             return
@@ -4583,6 +4584,7 @@ def _solve_exact_branch_and_bound(
         "time_ms": (time.perf_counter() - t0) * 1000.0,
         "name": "Exact (B&B)",
         "explored": explored,
+        "feasibleFound": bool(best_sol),
     }
     if time_limit_ms is not None:
         result["timedOut"] = bool(timed_out)
@@ -4595,7 +4597,7 @@ def solve_exact(
     vertex_data: Sequence[Dict[str, Any]],
     edge_data: Sequence[Tuple[int, int]],
     capacity_k: int,
-    max_n: int = 18,
+    max_n: Optional[int] = 18,
 ) -> Optional[Dict[str, Any]]:
     return _solve_exact_branch_and_bound(
         vertex_data,

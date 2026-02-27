@@ -22,6 +22,7 @@ from .analysis_tools.ScaleVisualizer import ScaleVisualizer
 from .analysis_tools.datareader import list_dataset_files, parse_scale_from_filename
 from .algorithms import (
     solve_exact,
+    solve_exact_time_limited,
     solve_gccvc,
     solve_grccvc,
     solve_gwccvc,
@@ -583,10 +584,25 @@ def run_methods_for_k(
     generations: int,
     seed: int,
     hga_budget_override: Optional[Tuple[int, int]] = None,
+    exact_timebox_multiplier: Optional[float] = None,
+    exact_timebox_min_ms: float = 1.0,
 ) -> Dict[str, Any]:
     results: Dict[str, Any] = {}
     n_vertices = len(vertex_data)
-    for method in methods_to_run:
+    method_order: List[str] = []
+    seen = set()
+    for raw in methods_to_run:
+        method = str(raw).strip().lower()
+        if method in seen:
+            continue
+        seen.add(method)
+        method_order.append(method)
+
+    run_order = [method for method in method_order if method != "exact"]
+    if "exact" in method_order:
+        run_order.append("exact")
+
+    for method in run_order:
         result: Optional[Dict[str, Any]]
         if method == "gccvc":
             result = solve_gccvc(vertex_data, normalized_edges, capacity_k, seed)
@@ -634,10 +650,36 @@ def run_methods_for_k(
             result["effectivePopSize"] = effective_pop
             result["effectiveGenerations"] = effective_gens
         elif method == "exact":
-            result = solve_exact(vertex_data, normalized_edges, capacity_k, max_n=18)
-            if result is None:
-                results["exact"] = None
-                continue
+            exact_budget_ms: Optional[float] = None
+            if exact_timebox_multiplier is not None:
+                longest_time_ms = 0.0
+                for prev_method in run_order:
+                    if prev_method == "exact":
+                        continue
+                    prev_result = results.get(prev_method)
+                    if not prev_result:
+                        continue
+                    prev_time = float(prev_result.get("time", float("nan")))
+                    if math.isfinite(prev_time):
+                        longest_time_ms = max(longest_time_ms, prev_time)
+                exact_budget_ms = max(
+                    float(exact_timebox_min_ms),
+                    float(exact_timebox_multiplier) * float(longest_time_ms),
+                )
+
+            if exact_budget_ms is not None:
+                result = solve_exact_time_limited(
+                    vertex_data,
+                    normalized_edges,
+                    capacity_k,
+                    time_limit_ms=exact_budget_ms,
+                    max_n=None,
+                )
+            else:
+                result = solve_exact(vertex_data, normalized_edges, capacity_k, max_n=18)
+                if result is None:
+                    results["exact"] = None
+                    continue
         else:
             continue
 
@@ -660,6 +702,12 @@ def run_methods_for_k(
                 serialized_result["time"] = round(float(value), 3)
             else:
                 serialized_result[key] = value
+        if method == "exact" and exact_budget_ms is not None:
+            serialized_result["timeBudgetMs"] = round(float(exact_budget_ms), 3)
+            serialized_result["timeBudgetMultiplier"] = float(exact_timebox_multiplier)
+            serialized_result["timeBudgetSource"] = "2x-longest-non-exact"
+            if not bool((serialized_result.get("verification") or {}).get("isValid")):
+                serialized_result["status"] = "solution is not valid"
 
         results[method] = serialized_result
     return results
@@ -701,8 +749,11 @@ def solve(payload: SolveRequest) -> Dict[str, Any]:
             "hga_v2",
             "weighted-and-cover-oriented-hga",
         ]
-        if payload.includeExact:
-            methods_to_run.append("exact")
+    # /api/solve always operates on a single graph. Keep Exact B&B enabled by default.
+    if payload.methods is None and "exact" not in methods_to_run:
+        methods_to_run.append("exact")
+    elif payload.methods is not None and payload.includeExact and "exact" not in methods_to_run:
+        methods_to_run.append("exact")
 
     if not payload.optimizeK and payload.capacityK is None:
         raise HTTPException(
@@ -775,6 +826,8 @@ def solve(payload: SolveRequest) -> Dict[str, Any]:
             pop_size=payload.popSize,
             generations=payload.generations,
             seed=payload.seed,
+            exact_timebox_multiplier=2.0,
+            exact_timebox_min_ms=1.0,
         )
         full_results_by_k[k] = run_results
         return run_results
@@ -1319,9 +1372,11 @@ def _run_dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> D
         medium_scales=DAGDEVIREN_DEFAULT_MEDIUM_SCALES,
         large_scales=DAGDEVIREN_DEFAULT_LARGE_SCALES,
         capacity_by_scale=capacity_by_scale,
-        exact_timebox_scales=["small", "medium"],
+        exact_timebox_scales=["medium", "large"],
         exact_timebox_multiplier=2.0,
         exact_timebox_min_ms=1.0,
+        exact_forced_scales=["small", "medium", "large"],
+        exact_unbounded_scales=["small"],
     )
     graph_analysis = graph_analyzer.analyze_dataset(
         dataset_dir=dataset_dir,
@@ -1413,8 +1468,10 @@ def _run_dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> D
             "maxFilesPerScale": payload.maxFilesPerScale,
             "selectionMode": "grouped-by-n-m-include-all-s",
             "presetExactPolicy": {
-                "enabledForScales": ["small", "medium"],
-                "runOrder": "non-exact-first-then-exact",
+                "enabledForScales": ["small", "medium", "large"],
+                "runOrder": "non-exact-first-then-exact-per-graph",
+                "smallScaleTimeBudget": "none",
+                "timedScales": ["medium", "large"],
                 "timeBudgetMultiplier": 2.0,
                 "timeBudgetReference": "longest-non-exact-time",
                 "onInvalid": "solution is not valid",
@@ -1604,6 +1661,24 @@ def dagdeviren_run(payload: DagdevirenAnalysisRequest) -> Dict[str, Any]:
         "hga_v2",
         "weighted-and-cover-oriented-hga",
     ]
+    single_file_mode = bool(payload.files and len(payload.files) == 1)
+    if (not single_file_mode) and payload.filenameContains:
+        try:
+            name_token = str(payload.filenameContains).strip()
+            matched = list_dataset_files(
+                dataset_dir,
+                files=payload.files,
+                filename_contains=payload.filenameContains,
+                max_files=2,
+            )
+            exact_name_matches = [
+                path
+                for path in matched
+                if path.name == name_token or path.stem == name_token
+            ]
+            single_file_mode = len(exact_name_matches) == 1 or len(matched) == 1
+        except Exception:
+            single_file_mode = False
     ratios = payload.ratios or list(DAGDEVIREN_DEFAULT_RATIOS)
     small_scales = payload.smallScales or list(DAGDEVIREN_DEFAULT_SMALL_SCALES)
     medium_scales = payload.mediumScales or list(DAGDEVIREN_DEFAULT_MEDIUM_SCALES)
@@ -1625,6 +1700,11 @@ def dagdeviren_run(payload: DagdevirenAnalysisRequest) -> Dict[str, Any]:
         medium_scales=medium_scales,
         large_scales=large_scales,
         capacity_by_scale=capacity_by_scale,
+        exact_timebox_scales=["medium", "large"] if single_file_mode else None,
+        exact_timebox_multiplier=2.0,
+        exact_timebox_min_ms=1.0,
+        exact_forced_scales=["small", "medium", "large"] if single_file_mode else None,
+        exact_unbounded_scales=["small"] if single_file_mode else None,
     )
     graph_analysis = graph_analyzer.analyze_dataset(
         dataset_dir=dataset_dir,
@@ -1647,11 +1727,21 @@ def dagdeviren_run(payload: DagdevirenAnalysisRequest) -> Dict[str, Any]:
             "optimizeMaxTrials": payload.optimizeMaxTrials,
             "maxFiles": payload.maxFiles,
             "filenameContains": payload.filenameContains,
+            "singleFileMode": single_file_mode,
             "ratios": ratios,
             "smallScales": small_scales,
             "mediumScales": medium_scales,
             "largeScales": large_scales,
             "capacityByScale": capacity_by_scale,
+            "singleFileExactPolicy": {
+                "enabled": single_file_mode,
+                "forcedScales": ["small", "medium", "large"] if single_file_mode else [],
+                "smallScaleTimeBudget": "none" if single_file_mode else None,
+                "timedScales": ["medium", "large"] if single_file_mode else [],
+                "timeBudgetMultiplier": 2.0 if single_file_mode else None,
+                "timeBudgetReference": "longest-non-exact-time" if single_file_mode else None,
+                "onInvalid": "solution is not valid" if single_file_mode else None,
+            },
             "graphCount": graph_analysis["graphCount"],
             "errorCount": graph_analysis["errorCount"],
         },
