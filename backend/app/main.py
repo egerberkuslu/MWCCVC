@@ -28,7 +28,6 @@ from .algorithms import (
     solve_gwccvc,
     solve_hga,
     solve_hga_v2,
-    solve_weighted_and_cover_oriented_hga,
     verify_solution,
 )
 
@@ -41,6 +40,7 @@ SUPPORTED_METHODS = {
     "weighted-and-cover-oriented-hga",
     "exact",
 }
+DISABLED_METHODS = {"weighted-and-cover-oriented-hga"}
 SUPPORTED_OPTIMIZE_GOALS = {"min-feasible-k", "best-weight"}
 DEFAULT_DAGDEVIREN_DATASET_DIR = Path(__file__).resolve().parents[1] / "data" / "DagdevirenDataset"
 DAGDEVIREN_DEFAULT_RATIOS = [2.0, 4.0, 6.0, 8.0]
@@ -58,6 +58,18 @@ _PRESET_TEST_JOBS_LOCK = threading.Lock()
 LOG_DIR = Path(__file__).resolve().parents[1] / "data"
 SOLVE_LOG_PATH = LOG_DIR / "solve_runs.jsonl"
 TEST_RESULTS_DIR = LOG_DIR / "test_results"
+
+
+def _filter_disabled_methods(methods: List[str]) -> List[str]:
+    filtered: List[str] = []
+    seen = set()
+    for raw in methods:
+        method = str(raw).strip().lower()
+        if not method or method in seen or method in DISABLED_METHODS:
+            continue
+        seen.add(method)
+        filtered.append(method)
+    return filtered
 
 
 class VertexIn(BaseModel):
@@ -92,6 +104,8 @@ class SolveRequest(BaseModel):
         deduped: List[str] = []
         seen = set()
         for method in normalized:
+            if method in DISABLED_METHODS:
+                continue
             if method not in seen:
                 seen.add(method)
                 deduped.append(method)
@@ -143,6 +157,8 @@ class DagdevirenAnalysisRequest(BaseModel):
         deduped: List[str] = []
         seen = set()
         for method in normalized:
+            if method in DISABLED_METHODS:
+                continue
             if method not in seen:
                 seen.add(method)
                 deduped.append(method)
@@ -236,6 +252,8 @@ class DagdevirenPresetScaleTestRequest(BaseModel):
         deduped: List[str] = []
         seen = set()
         for method in normalized:
+            if method in DISABLED_METHODS:
+                continue
             if method not in seen:
                 seen.add(method)
                 deduped.append(method)
@@ -593,6 +611,8 @@ def run_methods_for_k(
     seen = set()
     for raw in methods_to_run:
         method = str(raw).strip().lower()
+        if method in DISABLED_METHODS:
+            continue
         if method in seen:
             continue
         seen.add(method)
@@ -610,7 +630,7 @@ def run_methods_for_k(
             result = solve_grccvc(vertex_data, normalized_edges, capacity_k, seed)
         elif method == "gwccvc":
             result = solve_gwccvc(vertex_data, normalized_edges, capacity_k, seed)
-        elif method in {"hga", "hga_v2", "weighted-and-cover-oriented-hga"}:
+        elif method in {"hga", "hga_v2"}:
             if hga_budget_override is None:
                 effective_pop, effective_gens = adaptive_hga_budget(
                     n_vertices,
@@ -622,15 +642,6 @@ def run_methods_for_k(
                 effective_gens = max(1, int(hga_budget_override[1]))
             if method == "hga_v2":
                 result = solve_hga_v2(
-                    vertex_data,
-                    normalized_edges,
-                    capacity_k,
-                    effective_pop,
-                    effective_gens,
-                    seed,
-                )
-            elif method == "weighted-and-cover-oriented-hga":
-                result = solve_weighted_and_cover_oriented_hga(
                     vertex_data,
                     normalized_edges,
                     capacity_k,
@@ -747,8 +758,8 @@ def solve(payload: SolveRequest) -> Dict[str, Any]:
             "gwccvc",
             "hga",
             "hga_v2",
-            "weighted-and-cover-oriented-hga",
         ]
+    methods_to_run = _filter_disabled_methods(methods_to_run)
     # /api/solve always operates on a single graph. Keep Exact B&B enabled by default.
     if payload.methods is None and "exact" not in methods_to_run:
         methods_to_run.append("exact")
@@ -913,7 +924,7 @@ def solve(payload: SolveRequest) -> Dict[str, Any]:
                 }
                 if any(
                     method in trial_methods
-                    for method in {"hga", "hga_v2", "weighted-and-cover-oriented-hga"}
+                    for method in {"hga", "hga_v2"}
                 )
                 else None,
                 "trials": trial_list,
@@ -1290,8 +1301,8 @@ def _run_dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> D
         "gwccvc",
         "hga",
         "hga_v2",
-        "weighted-and-cover-oriented-hga",
     ]
+    methods = _filter_disabled_methods(methods)
     ratios = payload.ratios or list(DAGDEVIREN_DEFAULT_RATIOS)
     ratio_set = _normalized_ratio_set(ratios)
     capacity_by_scale = payload.capacityByScale or dict(DAGDEVIREN_DEFAULT_CAPACITY_BY_SCALE)
@@ -1659,8 +1670,8 @@ def dagdeviren_run(payload: DagdevirenAnalysisRequest) -> Dict[str, Any]:
         "gwccvc",
         "hga",
         "hga_v2",
-        "weighted-and-cover-oriented-hga",
     ]
+    methods = _filter_disabled_methods(methods)
     single_file_mode = bool(payload.files and len(payload.files) == 1)
     if (not single_file_mode) and payload.filenameContains:
         try:
@@ -1679,7 +1690,10 @@ def dagdeviren_run(payload: DagdevirenAnalysisRequest) -> Dict[str, Any]:
             single_file_mode = len(exact_name_matches) == 1 or len(matched) == 1
         except Exception:
             single_file_mode = False
-    ratios = payload.ratios or list(DAGDEVIREN_DEFAULT_RATIOS)
+    # Single-file analysis should not be silently filtered out by ratio presets.
+    # When a single file is targeted, disable ratio filtering and keep only the
+    # filename/files selector as the effective constraint.
+    ratios = [] if single_file_mode else (payload.ratios or list(DAGDEVIREN_DEFAULT_RATIOS))
     small_scales = payload.smallScales or list(DAGDEVIREN_DEFAULT_SMALL_SCALES)
     medium_scales = payload.mediumScales or list(DAGDEVIREN_DEFAULT_MEDIUM_SCALES)
     large_scales = payload.largeScales or list(DAGDEVIREN_DEFAULT_LARGE_SCALES)

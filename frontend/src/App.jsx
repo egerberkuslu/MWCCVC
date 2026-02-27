@@ -356,7 +356,6 @@ export default function App() {
         "gwccvc",
         "hga",
         "hga_v2",
-        "weighted-and-cover-oriented-hga",
         "exact",
       ];
 
@@ -422,7 +421,6 @@ export default function App() {
           "gwccvc",
           "hga",
           "hga_v2",
-          "weighted-and-cover-oriented-hga",
         ],
         includeExact: false,
         capacityK: kMode === "manual" ? manualK || undefined : undefined,
@@ -474,7 +472,6 @@ export default function App() {
           "gwccvc",
           "hga",
           "hga_v2",
-          "weighted-and-cover-oriented-hga",
         ],
         includeExact: false,
         capacityK: kMode === "manual" ? manualK || undefined : undefined,
@@ -669,7 +666,7 @@ export default function App() {
   );
 
   const convergenceData = useMemo(() => {
-    const fallbackKeys = ["weighted-and-cover-oriented-hga", "hga_v2", "hga"];
+    const fallbackKeys = ["hga_v2", "hga"];
     let history = [];
     if (Array.isArray(results?.[selectedMethod]?.history)) {
       history = results[selectedMethod].history;
@@ -693,7 +690,7 @@ export default function App() {
     const other = methodRows
       .filter(
         (row) =>
-          !["hga", "hga_v2", "weighted-and-cover-oriented-hga"].includes(row.key)
+          !["hga", "hga_v2"].includes(row.key)
           && Number.isFinite(row.totalWeight)
       )
       .map((row) => row.totalWeight);

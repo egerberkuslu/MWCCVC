@@ -14,12 +14,6 @@ export const DEFAULT_SEED = 42;
 export const METHODS = [
   { key: "hga", label: "HGA-CCVC", color: "var(--method-hga)", mark: "●" },
   { key: "hga_v2", label: "HGA-CCVC v2", color: "var(--method-hga-v2)", mark: "◉" },
-  {
-    key: "weighted-and-cover-oriented-hga",
-    label: "Weighted&Cover HGA",
-    color: "var(--method-weighted-cover-hga)",
-    mark: "⬢",
-  },
   { key: "gccvc", label: "GCCVC", color: "var(--method-gccvc)", mark: "▲" },
   { key: "grccvc", label: "GRCCVC", color: "var(--method-grccvc)", mark: "◆" },
   { key: "gwccvc", label: "GWCCVC", color: "var(--method-gwccvc)", mark: "■" },

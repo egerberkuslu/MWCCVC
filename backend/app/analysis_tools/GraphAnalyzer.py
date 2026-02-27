@@ -13,7 +13,6 @@ from ..algorithms import (
     solve_gwccvc,
     solve_hga,
     solve_hga_v2,
-    solve_weighted_and_cover_oriented_hga,
     verify_solution,
 )
 from .datareader import list_dataset_files, parse_scale_from_filename, read_graph_from_file
@@ -27,6 +26,7 @@ SUPPORTED_METHODS = {
     "weighted-and-cover-oriented-hga",
     "exact",
 }
+DISABLED_METHODS = {"weighted-and-cover-oriented-hga"}
 SCALE_KEYS = ("small", "medium", "large")
 SUPPORTED_OPTIMIZE_GOALS = {"min-feasible-k", "best-weight"}
 
@@ -245,19 +245,10 @@ def _run_method(
         result = solve_grccvc(vertex_data, edge_data, capacity_k, seed)
     elif method == "gwccvc":
         result = solve_gwccvc(vertex_data, edge_data, capacity_k, seed)
-    elif method in {"hga", "hga_v2", "weighted-and-cover-oriented-hga"}:
+    elif method in {"hga", "hga_v2"}:
         effective_pop, effective_gens = _adaptive_hga_budget(len(vertex_data), pop_size, generations)
         if method == "hga_v2":
             result = solve_hga_v2(vertex_data, edge_data, capacity_k, effective_pop, effective_gens, seed)
-        elif method == "weighted-and-cover-oriented-hga":
-            result = solve_weighted_and_cover_oriented_hga(
-                vertex_data,
-                edge_data,
-                capacity_k,
-                effective_pop,
-                effective_gens,
-                seed,
-            )
         else:
             result = solve_hga(vertex_data, edge_data, capacity_k, effective_pop, effective_gens, seed)
         result["effectivePopSize"] = effective_pop
@@ -367,7 +358,7 @@ class GraphAnalyzer:
         seen = set()
         for raw in methods:
             method = str(raw).strip().lower()
-            if method not in SUPPORTED_METHODS or method in seen:
+            if method not in SUPPORTED_METHODS or method in seen or method in DISABLED_METHODS:
                 continue
             seen.add(method)
             normalized.append(method)
@@ -400,7 +391,6 @@ class GraphAnalyzer:
             "gwccvc",
             "hga",
             "hga_v2",
-            "weighted-and-cover-oriented-hga",
         ]
         self.pop_size = int(pop_size)
         self.generations = int(generations)
@@ -653,7 +643,7 @@ class GraphAnalyzer:
             }
             if any(
                 method in trial_methods
-                for method in {"hga", "hga_v2", "weighted-and-cover-oriented-hga"}
+                for method in {"hga", "hga_v2"}
             )
             else None,
             "trials": trial_list,
