@@ -1368,6 +1368,30 @@ def _run_dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> D
     else:
         analysis_files = selected_files or None
 
+    if payload.includeExact:
+        exact_kwargs = {
+            "exact_timebox_scales": ["medium", "large"],
+            "exact_timebox_multiplier": 2.0,
+            "exact_timebox_min_ms": 1.0,
+            "exact_forced_scales": ["small", "medium", "large"],
+            "exact_unbounded_scales": ["small"],
+        }
+        preset_exact_policy: Dict[str, Any] = {
+            "enabledForScales": ["small", "medium", "large"],
+            "runOrder": "non-exact-first-then-exact-per-graph",
+            "smallScaleTimeBudget": "none",
+            "timedScales": ["medium", "large"],
+            "timeBudgetMultiplier": 2.0,
+            "timeBudgetReference": "longest-non-exact-time",
+            "onInvalid": "solution is not valid",
+        }
+    else:
+        exact_kwargs = {}
+        preset_exact_policy = {
+            "enabled": False,
+            "reason": "includeExact flag disabled for this run",
+        }
+
     graph_analyzer = GraphAnalyzer(
         methods=methods,
         include_exact=payload.includeExact,
@@ -1383,11 +1407,7 @@ def _run_dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> D
         medium_scales=DAGDEVIREN_DEFAULT_MEDIUM_SCALES,
         large_scales=DAGDEVIREN_DEFAULT_LARGE_SCALES,
         capacity_by_scale=capacity_by_scale,
-        exact_timebox_scales=["medium", "large"],
-        exact_timebox_multiplier=2.0,
-        exact_timebox_min_ms=1.0,
-        exact_forced_scales=["small", "medium", "large"],
-        exact_unbounded_scales=["small"],
+        **exact_kwargs,
     )
     graph_analysis = graph_analyzer.analyze_dataset(
         dataset_dir=dataset_dir,
@@ -1478,15 +1498,7 @@ def _run_dagdeviren_preset_tests(payload: DagdevirenPresetScaleTestRequest) -> D
             "capacityByScale": capacity_by_scale,
             "maxFilesPerScale": payload.maxFilesPerScale,
             "selectionMode": "grouped-by-n-m-include-all-s",
-            "presetExactPolicy": {
-                "enabledForScales": ["small", "medium", "large"],
-                "runOrder": "non-exact-first-then-exact-per-graph",
-                "smallScaleTimeBudget": "none",
-                "timedScales": ["medium", "large"],
-                "timeBudgetMultiplier": 2.0,
-                "timeBudgetReference": "longest-non-exact-time",
-                "onInvalid": "solution is not valid",
-            },
+            "presetExactPolicy": preset_exact_policy,
             "syntheticEnabled": payload.fillMissingWithSynthetic,
             "syntheticTargetPerScale": synthetic_target_per_scale,
             "syntheticGeneratedCount": synthetic_generated_count,

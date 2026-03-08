@@ -1,0 +1,373 @@
+{
+  "version": 1,
+  "runKey": "ade4e52492c363fa",
+  "targetScale": "large",
+  "status": "running",
+  "createdAt": "2026-03-08T20:11:49.915437+00:00",
+  "updatedAt": "2026-03-08T20:11:49.915652+00:00",
+  "runDir": "/home/ege/ccvc/experiments/large_resume_ade4e52492c363fa",
+  "aggregateResultPath": "/home/ege/ccvc/experiments/large_resume_ade4e52492c363fa/aggregate.json",
+  "latestExportPath": "/home/ege/ccvc/experiments/20260308T201149Z_large_preset.json",
+  "perFileResultsDir": "/home/ege/ccvc/experiments/large_resume_ade4e52492c363fa/files",
+  "config": {
+    "targetScale": "large",
+    "datasetFilter": null,
+    "datasetDir": "/home/ege/ccvc/backend/data/DagdevirenDataset",
+    "maxFilesPerScale": 400,
+    "methods": [
+      "gccvc",
+      "grccvc",
+      "gwccvc",
+      "hga",
+      "hga_v2"
+    ],
+    "capacityK": null,
+    "optimizeK": true,
+    "optimizeGoal": "best-weight",
+    "optimizeMaxTrials": 14,
+    "ratios": [
+      2.0,
+      4.0,
+      6.0,
+      8.0,
+      10.0
+    ],
+    "capacityByScale": {
+      "small": 18,
+      "medium": 16,
+      "large": 16
+    },
+    "includeExact": false,
+    "fillMissingWithSynthetic": false,
+    "syntheticTargetPerScale": 5,
+    "popSize": 100,
+    "generations": 100,
+    "seed": 42
+  },
+  "selection": {
+    "datasetDir": "/home/ege/ccvc/backend/data/DagdevirenDataset",
+    "candidateCount": 360,
+    "selectedFiles": [
+      "n250_m500_s1.txt",
+      "n250_m1000_s1.txt",
+      "n250_m1500_s1.txt",
+      "n250_m2000_s1.txt",
+      "n250_m2500_s1.txt",
+      "n500_m1000_s1.txt",
+      "n500_m2000_s1.txt",
+      "n500_m3000_s1.txt",
+      "n500_m4000_s1.txt",
+      "n500_m5000_s1.txt",
+      "n750_m1500_s1.txt",
+      "n750_m3000_s1.txt",
+      "n750_m4500_s1.txt",
+      "n750_m6000_s1.txt",
+      "n750_m7500_s1.txt",
+      "n1000_m2000_s1.txt",
+      "n1000_m4000_s1.txt",
+      "n1000_m6000_s1.txt",
+      "n1000_m8000_s1.txt",
+      "n1000_m10000_s1.txt"
+    ],
+    "selectedRatios": [
+      2.0,
+      4.0,
+      6.0,
+      8.0,
+      10.0
+    ],
+    "pairCoverage": [
+      {
+        "n": 250,
+        "m": 500,
+        "ratio": 2.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n250_m500_s1.txt"
+        ]
+      },
+      {
+        "n": 250,
+        "m": 1000,
+        "ratio": 4.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n250_m1000_s1.txt"
+        ]
+      },
+      {
+        "n": 250,
+        "m": 1500,
+        "ratio": 6.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n250_m1500_s1.txt"
+        ]
+      },
+      {
+        "n": 250,
+        "m": 2000,
+        "ratio": 8.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n250_m2000_s1.txt"
+        ]
+      },
+      {
+        "n": 250,
+        "m": 2500,
+        "ratio": 10.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n250_m2500_s1.txt"
+        ]
+      },
+      {
+        "n": 500,
+        "m": 1000,
+        "ratio": 2.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n500_m1000_s1.txt"
+        ]
+      },
+      {
+        "n": 500,
+        "m": 2000,
+        "ratio": 4.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n500_m2000_s1.txt"
+        ]
+      },
+      {
+        "n": 500,
+        "m": 3000,
+        "ratio": 6.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n500_m3000_s1.txt"
+        ]
+      },
+      {
+        "n": 500,
+        "m": 4000,
+        "ratio": 8.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n500_m4000_s1.txt"
+        ]
+      },
+      {
+        "n": 500,
+        "m": 5000,
+        "ratio": 10.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n500_m5000_s1.txt"
+        ]
+      },
+      {
+        "n": 750,
+        "m": 1500,
+        "ratio": 2.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n750_m1500_s1.txt"
+        ]
+      },
+      {
+        "n": 750,
+        "m": 3000,
+        "ratio": 4.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n750_m3000_s1.txt"
+        ]
+      },
+      {
+        "n": 750,
+        "m": 4500,
+        "ratio": 6.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n750_m4500_s1.txt"
+        ]
+      },
+      {
+        "n": 750,
+        "m": 6000,
+        "ratio": 8.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n750_m6000_s1.txt"
+        ]
+      },
+      {
+        "n": 750,
+        "m": 7500,
+        "ratio": 10.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n750_m7500_s1.txt"
+        ]
+      },
+      {
+        "n": 1000,
+        "m": 2000,
+        "ratio": 2.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n1000_m2000_s1.txt"
+        ]
+      },
+      {
+        "n": 1000,
+        "m": 4000,
+        "ratio": 4.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n1000_m4000_s1.txt"
+        ]
+      },
+      {
+        "n": 1000,
+        "m": 6000,
+        "ratio": 6.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n1000_m6000_s1.txt"
+        ]
+      },
+      {
+        "n": 1000,
+        "m": 8000,
+        "ratio": 8.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n1000_m8000_s1.txt"
+        ]
+      },
+      {
+        "n": 1000,
+        "m": 10000,
+        "ratio": 10.0,
+        "sCount": 1,
+        "sValues": [
+          1
+        ],
+        "files": [
+          "n1000_m10000_s1.txt"
+        ]
+      }
+    ],
+    "selectedPairCount": 20,
+    "analysisMaxFiles": 20
+  },
+  "selectedFiles": [
+    "n250_m500_s1.txt",
+    "n250_m1000_s1.txt",
+    "n250_m1500_s1.txt",
+    "n250_m2000_s1.txt",
+    "n250_m2500_s1.txt",
+    "n500_m1000_s1.txt",
+    "n500_m2000_s1.txt",
+    "n500_m3000_s1.txt",
+    "n500_m4000_s1.txt",
+    "n500_m5000_s1.txt",
+    "n750_m1500_s1.txt",
+    "n750_m3000_s1.txt",
+    "n750_m4500_s1.txt",
+    "n750_m6000_s1.txt",
+    "n750_m7500_s1.txt",
+    "n1000_m2000_s1.txt",
+    "n1000_m4000_s1.txt",
+    "n1000_m6000_s1.txt",
+    "n1000_m8000_s1.txt",
+    "n1000_m10000_s1.txt"
+  ],
+  "completedFiles": [],
+  "completedCount": 0,
+  "pendingFiles": [
+    "n250_m500_s1.txt",
+    "n250_m1000_s1.txt",
+    "n250_m1500_s1.txt",
+    "n250_m2000_s1.txt",
+    "n250_m2500_s1.txt",
+    "n500_m1000_s1.txt",
+    "n500_m2000_s1.txt",
+    "n500_m3000_s1.txt",
+    "n500_m4000_s1.txt",
+    "n500_m5000_s1.txt",
+    "n750_m1500_s1.txt",
+    "n750_m3000_s1.txt",
+    "n750_m4500_s1.txt",
+    "n750_m6000_s1.txt",
+    "n750_m7500_s1.txt",
+    "n1000_m2000_s1.txt",
+    "n1000_m4000_s1.txt",
+    "n1000_m6000_s1.txt",
+    "n1000_m8000_s1.txt",
+    "n1000_m10000_s1.txt"
+  ],
+  "pendingCount": 20,
+  "lastCompletedFile": null,
+  "nextFile": "n250_m500_s1.txt"
+}
